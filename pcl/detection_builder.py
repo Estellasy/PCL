@@ -7,14 +7,14 @@
 import torch
 import torch.nn as nn
 from random import sample
-from neck import Yolov8Neck
+from head import Yolov8Head
 
 
 class DetectionCL(nn.Module):
     """
     Build a DetectionCL model, change the MLP layer into detection layer.
     """
-    def __init__(self, base_encoder, head=None, dim=128, r=10, m=0.999, T=0.1, loss_lambda=0.5,  mlp=True) -> None:
+    def __init__(self, base_encoder, dim=128, r=10, m=0.999, T=0.1, loss_lambda=0.5,  mlp=True) -> None:
         super(DetectionCL, self).__init__()
 
         self.r, self.m, self.T = r, m, T
@@ -39,9 +39,11 @@ class DetectionCL(nn.Module):
             self.encoder_k[0].avgpool = nn.Identity()
             self.encoder_k[0].fc = nn.Identity()
 
-            # 更新neck
-            # self.encoder_q[1] = Yolov8Neck()
-            # self.encoder_k[1] = Yolov8Neck()
+            # 更新head
+            channels = [256, 512, 1024, 2048]
+            self.encoder_q[1] = Yolov8Head(channels)
+            self.encoder_k[1] = Yolov8Head(channels)
+
 
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)  # 初始化encoder_k的参数为encoder_q的参数
@@ -56,7 +58,7 @@ class DetectionCL(nn.Module):
         self.queue2 = nn.functional.normalize(self.queue2, dim=0)
         self.register_buffer("queue2_ptr", torch.zeros(1, dtype=torch.long))
 
-    
+
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
         """
