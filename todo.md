@@ -1,5 +1,6 @@
-- [ ] 损失函数
-- [ ] 数据增强
+- [x] 损失函数
+- [x] 数据增强
+- [ ] DetectionCL代码
 - [ ] 训练主逻辑
 
 # 计算 Wasserstein 距离
@@ -20,3 +21,52 @@
 
 最优传输问题
 =>解是所有耦合矩阵上的最低成本
+
+
+## 生成数据的prompt
+为了充分利用有限的训练数据并提高模型在表面缺陷检测任务中的表现，使用一种动态混合数据增强策略，结合CutPaste增强和MixUp增强。
+请帮我写一个深度学习的数据加载工具，要求如下：
+1. 数据的调用方式实例
+"""
+class TwoCropsTransform:
+    """Take two random crops of one image as the query and key."""
+
+    def __init__(self, base_transform):
+        self.base_transform = base_transform
+
+    def __call__(self, x):
+        q = self.base_transform(x)
+        k = self.base_transform(x)
+        return [q, k]
+
+train_dataset = RandomImageFolderInstance(
+        traindir,
+        TwoCropsTransform(transforms.Compose(augmentation)))
+"""
+其中，RandomImageFolderInstance为你需要写的方法，TwoCropsTransform为数据增强方式，已写好。
+
+2. 你需要做的：写RandomImageFolderInstance方法，
+   假设训练数据集合为X={x1,x2,..,xn}，数量为n，batch大小为m。在每一批次的训练中，数据样本的构建方式如下：
+    对于样本x_i \in x，从剩下的个样本中随机选择两个样本x_a和x_b，应用CutPaste增强和MixUp增强。
+    a. CutPaste增强：对于x_a，应用CutPaste增强，首先利用二值分割快速定位前景和背景区域，随后在x_a的前景区域中随机cut一小块区域，paste到x_i的前景区域。
+    b. MixUp增强: 对于x_b，应用MixUp增强，在通道维度对x_i和x_b进行线性变换混合。
+    c. 混合CutPaste和MixUp：首先应用CutPaste增强，然后将结果与另一张图片进行MixUp增强。公式如下：
+    MixUp(CutPaste(x_i, x_a), x_b) = \lambda CutPaste(x_i, x_a) + (1-\lambda)x_b
+
+    RandomImageFolderInstance和下面的ImageFolderInstance输入输出保持一致：
+    """
+    class ImageFolderInstance(datasets.ImageFolder):
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)           
+        return sample, index
+    """
+
+
+# 改写训练的prompt
+TODO...
+
+
+# 
