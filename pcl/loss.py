@@ -4,98 +4,80 @@
 @Time        : 2024/07/22 00:08:11
 """
 
-
-"""
-An unofficial PyTorch implementation of "A Sliced Wasserstein Loss for Neural Texture Synthesis" paper [CVPR 2021].
-https://github.com/xchhuang/pytorch_sliced_wasserstein_loss/blob/main/pytorch/loss_fn.py
-"""
-
-"""
-通过SinkhornDistance方法计算Wasserstein距离
-https://www.cnblogs.com/wangxiaocvpr/p/11574006.html
-https://github.com/Haoqing-Wang/CPNWCP/blob/main/methods/cpn_wcp.py
-维度信息还需要仔细看 如何做
-"""
-
 import torch
-import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class EMDLoss(nn.Module):
-    def __init__(self):
-        super(EMDLoss, self).__init__()
+class SinkhornDistance(torch.nn.Module):
+    def __init__(self, eps, max_iter, reduction="mean"):
+        super(SinkhornDistance, self).__init__()
+        self.eps = eps
+        self.max_iter = max_iter
+        self.reduction = reduction
 
+    def forward(self, x, y):
+        # 扁平化空间维度
+        batch_size, num_points, height, width = x.size()
+        x = x.view(batch_size, num_points, -1)
+        y = y.view(batch_size, num_points, -1)
 
-    def M(self, C, u, v, eps):
-        """Modified cost for logarithmic updates
-        C: 成本矩阵
-        u/v: 对偶变量 用于迭代更新
-        eps: 正则化参数 用于控制平滑程度
-        """
-        return (-C + u.unsqueeze(-1) + v.unsqueeze(-2)) / eps
+        # 归一化特征向量
+        x = F.normalize(x, p=2, dim=-1)
+        y = F.normalize(y, p=2, dim=-1)
 
+        # 计算余弦相似度矩阵并归一化
+        cost_matrix = 1 - F.cosine_similarity(x.unsqueeze(2), y.unsqueeze(1), dim=-1)
+        cost_matrix = cost_matrix / cost_matrix.max()  # 归一化到 [0, 1] 范围内
 
-    def SinkhornDistance(self, p1, p2, C, iter=5, eps=0.5):
-        """通过SinkhornDistance方法计算Wasserstein距离
-        p1/p2: 输入的两个概率分布
-        """
-        u = torch.zeros_like(p1)    # 初始化为全0 Tensor 用于迭代更新
-        v = torch.zeros_like(p2)
-        for _ in range(iter):
-            print("u.shape", u.shape)
-            print("v.shape", v.shape)
-            print("C.shape", C.shape)
-            M_uv = self.M(C, u, v, eps)  # 计算M的结果
-            print(M_uv)
-            u = eps * (torch.log(p1 + 1e-12) - torch.logsumexp(self.M(C, u, v, eps), dim=-1)) + u
-            print("u.shape", u.shape)
-            v = eps * (torch.log(p2 + 1e-12) - torch.logsumexp(self.M(C, u, v, eps).transpose(-2, -1), dim=-1)) + v
-            print("v.shape", v.shape)
+        # 初始分布
+        u = torch.ones(batch_size, num_points).to(x.device) / num_points
+        v = torch.ones(batch_size, num_points).to(x.device) / num_points
 
-        pi = torch.exp(self.M(C, u, v, eps))    # 联合分布
-        return (pi * C).sum((-2, -1)).mean()    # 联合分布和成本矩阵的加权
-    
+        # Sinkhorn 迭代
+        for _ in range(self.max_iter):
+            u = 1.0 / (cost_matrix.bmm(v.unsqueeze(-1)).squeeze(-1) + self.eps)
+            v = 1.0 / (
+                cost_matrix.transpose(1, 2).bmm(u.unsqueeze(-1)).squeeze(-1) + self.eps
+            )
 
-    def _forward(self, x1, x2):
         # 计算Wasserstein距离
-        # flatten并norm
-        b, c, h, w = x1.shape
-        x1 = x1.view(b, c, -1)  # [batch, channels, height * width]
-        x2 = x2.view(b, c, -1)
+        distance = (u.unsqueeze(-1) * cost_matrix * v.unsqueeze(-2)).sum(dim=(1, 2))
 
-        # feature map -> distribution
-        p1 = torch.softmax(x1, dim=-1)  # [batch, channels, height * width]
-        p2 = torch.softmax(x2, dim=-1)
+        if self.reduction == "mean":
+            distance = distance.mean()
+        elif self.reduction == "sum":
+            distance = distance.sum()
 
-        # 成本矩阵计算
-        # 欧氏距离
-        # c = torch.cdist(p1, p2, p=2)    # [batch, channels, height * width, height * width]
-
-        # 余弦相似度
-        cos_sim = F.cosine_similarity(x1.unsqueeze(2), x2.unsqueeze(1), dim=-1)  # [batch, channels, height * width, height * width]
-        C = 1 - cos_sim
-        C = (C - C.min(dim=-1, keepdim=True)[0]) / (C.max(dim=-1, keepdim=True)[0] - C.min(dim=-1, keepdim=True)[0])
-
-        loss = self.SinkhornDistance(p1, p2, C)
-        return loss
+        return distance
 
 
-    def forward(self, f1, f2, temp=5.):
-        assert len(f1) == len(f2)
-        loss = 0.
-        for (x1, x2) in zip(f1, f2):
-            loss += self._forward(x1, x2)
-        return loss / len(f1)
-    
+class WassersteinLoss(nn.Module):
+    def __init__(self, eps=0.1, max_iter=100, reduction="mean"):
+        super(WassersteinLoss, self).__init__()
+        self.sinkhorn_distance = SinkhornDistance(eps, max_iter, reduction)
+
+    def forward(self, pred, target):
+        return self.sinkhorn_distance(pred, target)
+
+
+class EMDLoss(nn.Module):
+    def __init__(self, eps=0.1, max_iter=100, reduction="mean"):
+        super().__init__()
+        self.loss = 0.0
+        self.wasserstein_loss = WassersteinLoss(eps, max_iter, reduction)
+
+    def forward(self, features1, features2):
+        assert len(features1) == len(features2)
+        for x1, x2 in zip(features1, features2):
+            self.loss += self.wasserstein_loss(x1, x2)
+        return self.loss
+
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    emd_loss = EMDLoss().to(device)
-    
-    x1 = torch.randn(1, 32, 40, 40).to(device)
-    x2 = torch.randn(1, 32, 40, 40).to(device)
-    
-    loss = emd_loss.forward([x1], [x2])
-    print(loss)
+    pred = torch.randn(4, 8, 32, 32)
+    target = torch.randn(4, 8, 32, 32)
+
+    emd_loss = EMDLoss(eps=0.1, max_iter=100)
+    loss = emd_loss([pred], [target])
+    print("Wasserstein Loss:", loss)
