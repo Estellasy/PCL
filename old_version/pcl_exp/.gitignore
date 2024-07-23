@@ -1,0 +1,5 @@
+work_dir/*
+*.pth.tar
+data/
+__pychache__
+*.pyc

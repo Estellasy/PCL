@@ -1,0 +1,24 @@
+# Train
+```bash
+python main_pcl.py /home/siyi/DefectDetection/CL_for_Real/PCLv1/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 32 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir experiment_pcl2 --dist-url 'tcp://localhost:10001' --num-cluster '64,96,128'  --pcl-r 32 --seed 0 --warmup-epoch 20
+```
+
+
+```bash
+python main_pcl.py /home/siyi/DefectDetection/CL_for_Real/PCLv1/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir experiment_pcl2 --dist-url 'tcp://localhost:10001' --num-cluster '10,20,30'  --pcl-r 4 --seed 0 --warmup-epoch 20 --resume experiment_pcl2/checkpoint_0059.pth.tar
+```
+
+```bash
+python main_pcl.py /home/siyi/DefectDetection/CL_for_Real/PCLv1/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir experiment_PCLv1/8_9_10 --dist-url 'tcp://localhost:10001' --num-cluster '8,9,10'  --pcl-r 4 --seed 0 --warmup-epoch 20 --resume experiment_PCLv1/8_9_10/checkpoint_0199.pth.tar --epochs 300
+```
+
+```bash
+python main_pcl.py /home/siyi/DefectDetection/CL_for_Real/PCLv1/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir experiment_PCLv1/8_9_10_w50 --dist-url 'tcp://localhost:10001' --num-cluster '8,9,10'  --pcl-r 4 --seed 0 --warmup-epoch 50 --epochs 300
+```
+
+
+# Debug
+# Train
+```bash
+python main_pcl_debug.py /home/siyi/DefectDetection/CL_for_Real/PCLv1/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 2 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir debug --dist-url 'tcp://localhost:10001' --num-cluster '64,96,128'  --pcl-r 32 --seed 0 --warmup-epoch 20
+```
