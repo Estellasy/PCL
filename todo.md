@@ -255,3 +255,80 @@ if cluster_dense is not None:
         pass"""
 补充cluster_dense的聚类方式
 
+# 修改训练逻辑的prompt
+下面是数据的训练逻辑，给出了训练流程，以及global feature的处理，请帮我补充dense级别的处理。
+主要有三个地方：
+1. """
+   # dense
+            cluster_result_dense = {'im2cluster':[],'centroids':[],'density':[]}
+   """
+
+2. """
+if args.gpu == 0:
+                global_features[torch.norm(global_features,dim=1)>1.5] /= 2 # account for the few samples that are computed twice  
+                global_features = global_features.numpy()
+                cluster_result_global = run_kmeans(global_features, args)
+
+                # dense
+"""
+
+3. """
+def compute_features(eval_loader, model, args):
+    print('Computing features')
+    model.eval()
+    # global features 
+    global_features = torch.zeros(len(eval_loader.dataset),args.low_dim).cuda()
+    # dense features
+    dense_features = 
+
+    for i, (images, index) in enumerate(tqdm(eval_loader)):
+        with torch.no_grad():
+            images = images.cuda(non_blocking=True)
+            feat_global, feat_dense = model(images, eval=True)
+            global_features[index] = feat_global
+            # local
+
+    dist.barrier()
+    dist.all_reduce(global_features, op=dist.ReduceOp.SUM)   
+
+    return global_features.cpu(), dense_features.cpu()
+"""
+
+每个epoch的cluster代码如下
+"""python
+for epoch in range(args.start_epoch, args.epochs):
+        cluster_result_global = None
+        cluster_result_dense = None
+
+        if epoch >= args.warmup_epoch:
+            # compute momentum features for center-cropped images
+            global_features, dense_features = compute_features(eval_loader, model, args)
+
+            # placeholder for clustering result
+            cluster_result_global = {'im2cluster':[],'centroids':[],'density':[]}
+            for num_cluster in args.num_cluster:
+                cluster_result_global['im2cluster'].append(torch.zeros(len(eval_dataset),dtype=torch.long).cuda())
+                cluster_result_global['centroids'].append(torch.zeros(int(num_cluster),args.low_dim).cuda())
+                cluster_result_global['density'].append(torch.zeros(int(num_cluster)).cuda()) 
+
+            # dense
+            cluster_result_dense = {'im2cluster':[],'centroids':[],'density':[]}
+
+
+            if args.gpu == 0:
+                global_features[torch.norm(global_features,dim=1)>1.5] /= 2 # account for the few samples that are computed twice  
+                global_features = global_features.numpy()
+                cluster_result_global = run_kmeans(global_features, args)
+
+                # dense
+            
+            dist.barrier()  
+            # broadcast clustering result
+            for k, data_list in cluster_result_global.items():
+                for data_tensor in data_list:                
+                    dist.broadcast(data_tensor, 0, async_op=False)     
+
+            for k, data_list in cluster_result_dense.items():
+                for data_tensor in data_list:                
+                    dist.broadcast(data_tensor, 0, async_op=False)     
+"""
