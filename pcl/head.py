@@ -8,6 +8,21 @@ import torch
 import torch.nn as nn
 from ultralytics.nn.modules.block import C2f
 
+class MlpHead(nn.Module):
+    def __init__(self, in_channels, hid_channels, out_channels):
+        super(MlpHead, self).__init__()
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # mlp: fc-relu-fc
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, hid_channels), nn.ReLU(inplace=True),
+            nn.Linear(hid_channels, out_channels))
+
+    def forward(self, x):
+        x = self.avgpool(x)
+        x = self.mlp(x)
+        return x
+
 
 class Yolov8Head(nn.Module):
     def __init__(self, channels):
@@ -46,4 +61,16 @@ class Yolov8Head(nn.Module):
         x = self.c2f_4(x)
         p3 = x  # torch.Size([1, 1024, 20, 20])
 
-        return [p1, p2, p3]
+        # 特征融合
+        # Fusion process
+        p1 = nn.functional.adaptive_avg_pool2d(p1, (20, 20))  # torch.Size([1, 256, 20, 20])
+        p2 = nn.functional.adaptive_avg_pool2d(p2, (20, 20))  # torch.Size([1, 512, 20, 20])
+        p3 = p3  # torch.Size([1, 1024, 20, 20])
+
+        fused = torch.cat((p1, p2, p3), dim=1)  # torch.Size([1, 1792, 20, 20])
+        fused = self.conv_fuse(fused)  # torch.Size([1, 1024, 20, 20])
+        fused = self.bn_fuse(fused)
+        fused = self.relu_fuse(fused)
+
+        return fused
+        # return [p1, p2, p3]
