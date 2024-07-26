@@ -248,7 +248,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
-            transforms.RandomApply([pcl.loader.GaussianBlur([.1, 2.])], p=0.5),
+            transforms.RandomApply([pcl.detection_loader.GaussianBlur([.1, 2.])], p=0.5),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize
@@ -322,22 +322,28 @@ def main_worker(gpu, ngpus_per_node, args):
                 global_features[torch.norm(global_features,dim=1)>1.5] /= 2 # account for the few samples that are computed twice  
                 global_features = global_features.numpy()
                 cluster_result_global = run_kmeans(global_features, args)
-
+                print("global")
                 # dense
                 dense_features = dense_features.view(dense_features.size(0), -1)  # Flatten dense features
                 dense_features[dense_features.norm(dim=1) > 1.5] /= 2
                 dense_features = dense_features.numpy()
                 cluster_result_dense = run_kmeans(dense_features, args)
             
+                print("dense")
             dist.barrier()  
+            print("dist bug")
             # broadcast clustering result
             for k, data_list in cluster_result_global.items():
                 for data_tensor in data_list:                
                     dist.broadcast(data_tensor, 0, async_op=False)     
 
+                print("broadcast global")
+
             for k, data_list in cluster_result_dense.items():
                 for data_tensor in data_list:                
-                    dist.broadcast(data_tensor, 0, async_op=False)     
+                    dist.broadcast(data_tensor, 0, async_op=False)  
+
+                print("broadcast dense")   
 
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -359,13 +365,17 @@ def train(train_loader, model, criterion, emd_loss_fn, optimizer, epoch, args, c
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
+    global_loss = AverageMeter('Global Loss', ':.4e')
+    dense_loss = AverageMeter('Dense Loss', ':.4e')
+    global_proto_loss = AverageMeter('Global Proto Loss', ':.4e')
+    dense_proto_loss = AverageMeter('Dense Proto Loss', ':.4e')
     acc_inst = AverageMeter('Acc@Inst', ':6.2f')   
     acc_proto_global = AverageMeter('Acc@Global Proto', ':6.2f')
     acc_proto_dense = AverageMeter('Acc@Dense Proto', ':6.2f')
 
     progress = ProgressMeter(
         len(train_loader),
-        [batch_time, data_time, losses, acc_inst, acc_proto_global, acc_proto_dense],
+        [batch_time, data_time, losses, global_loss, dense_loss, global_proto_loss, dense_proto_loss, acc_inst, acc_proto_global, acc_proto_dense],
         prefix="Epoch: [{}]".format(epoch))
 
 
@@ -382,35 +392,49 @@ def train(train_loader, model, criterion, emd_loss_fn, optimizer, epoch, args, c
             images[1] = images[1].cuda(args.gpu, non_blocking=True)
 
         # compute output
-        result = model(im_q=images[0], im_k=images[1], cluster_result_global=cluster_result_global, cluster_result_dense=cluster_result_dense, index=index)
-        result_global = result["global"]
-        result_dense = result["dense"]
+        result = model(im_q=images[0], im_k=images[1], cluster_global=cluster_result_global, cluster_dense=cluster_result_dense, index=index)
 
         # loss
-        loss = dict()
+        loss = 0.
         global_output, global_target, global_output_proto, global_target_proto = result['global']
         dense_output, dense_target, dense_output_proto, dense_target_proto = result['dense']
         # InfoNCE loss global
-        loss['global_infonce'] = criterion(global_output, global_target)
+        print("global_output:", global_output.shape)
+        print("global_target:", global_target.shape)
+        global_loss = criterion(global_output, global_target)
+        loss += global_loss
         # ProtoNCE loss global
         if global_output_proto is not None:
-            loss_proto_global = 0
+            global_proto_loss = 0
             for proto_out, proto_target in zip(global_output_proto, global_target_proto):
-                loss_proto_global += criterion(proto_out, proto_target)
+                global_proto_loss += criterion(proto_out, proto_target)
                 accp = accuracy(proto_out, proto_target)[0]
                 acc_proto_global.update(accp[0], images[0].size(0))
-            loss_proto_global /= len(args.num_cluster)
-            loss += loss_proto_global
+            global_proto_loss /= len(args.num_cluster)
+            loss += global_proto_loss
 
+        print("dense_output:", dense_output.shape)
+        print("dense_target:", dense_target.shape)
+        # 将 dense_output 展平成 (N, C) 形状
+        N, D, C = dense_output.size()
+        dense_output_flattened = dense_output.view(N * D, C)
+
+        # 扩展 dense_target 以匹配 dense_output_flattened 的第一个维度
+        dense_target_expanded = dense_target.unsqueeze(1).expand(-1, D).flatten()
+        dense_loss = criterion(dense_output_flattened, dense_target_expanded)
+        loss += dense_loss
         # EMD loss dense (using EMD instead of ProtoNCE for dense features)
+        print(dense_output_proto is not None)
         if dense_output_proto is not None:
-            loss_proto_dense = 0
+            dense_proto_loss = 0
             for proto_out, proto_target in zip(dense_output_proto, dense_target_proto):
-                loss_proto_dense += emd_loss_fn(proto_out, proto_target)
+                print("proto_out:", proto_out.shape)
+                print("proto_target:", proto_target.shape)
+                dense_proto_loss += emd_loss_fn(proto_out, proto_target)
                 accp = accuracy(proto_out, proto_target)[0]
                 acc_proto_dense.update(accp[0], images[0].size(0))
-            loss_proto_dense /= len(args.num_cluster)
-            loss += loss_proto_dense
+            dense_proto_loss /= len(args.num_cluster)
+            loss += dense_proto_loss
 
         losses.update(loss.item(), images[0].size(0))
         acc = accuracy(global_output, global_target)[0] 
@@ -434,13 +458,16 @@ def compute_features(eval_loader, model, args):
     model.eval()
     # global features 
     global_features = torch.zeros(len(eval_loader.dataset),args.low_dim).cuda()
+    print("global_features:", global_features.shape)
     # dense features
-    dense_features = torch.zeros(len(eval_loader.dataset), 1024, 20, 20).cuda()  # Based on the YOLOv8 head output
+    dense_features = torch.zeros(len(eval_loader.dataset), 1024, 7, 7).cuda()  # Based on the YOLOv8 head output
+    print("dense_features:", dense_features.shape)
 
     for i, (images, index) in enumerate(tqdm(eval_loader)):
         with torch.no_grad():
             images = images.cuda(non_blocking=True)
-            feat_global, feat_dense = model(images, eval=True)
+            print("images:", images.shape)
+            feat_global, feat_dense = model(images, is_eval=True)
             global_features[index] = feat_global
             dense_features[index] = feat_dense
 
@@ -456,12 +483,11 @@ def run_kmeans(x, args):
     Args:
         x: data to be clustered
     """
-
     print('performing kmeans clustering')
-    results = {'im2cluster': [], 'centroids': [], 'density': []}
-
+    results = {'im2cluster':[],'centroids':[],'density':[]}
+    
     for seed, num_cluster in enumerate(args.num_cluster):
-        # intialize faiss clustering parameters
+        # initialize faiss clutering parameters
         d = x.shape[1]
         k = int(num_cluster)
         clus = faiss.Clustering(d, k)
@@ -471,55 +497,54 @@ def run_kmeans(x, args):
         clus.seed = seed
         clus.max_points_per_centroid = 1000
         clus.min_points_per_centroid = 10
-
+        
         res = faiss.StandardGpuResources()
         cfg = faiss.GpuIndexFlatConfig()
         cfg.useFloat16 = False
-        cfg.device = args.gpu
-        index = faiss.GpuIndexFlatL2(res, d, cfg)
+        cfg.device = args.gpu    
+        index = faiss.GpuIndexFlatL2(res, d, cfg)  
 
-        clus.train(x, index)
-
-        D, I = index.search(x, 1)  # for each sample, find cluster distance and assignments
+        clus.train(x, index)   
+        
+        D, I = index.search(x, 1) # for each sample, find cluster distance and assignments
         im2cluster = [int(n[0]) for n in I]
-
+        
         # get cluster centroids
-        centroids = faiss.vector_to_array(clus.centroids).reshape(k, d)
-
-        # sample-to-centroid distances for each cluster
-        Dcluster = [[] for c in range(k)]
-        for im, i in enumerate(im2cluster):
+        centroids = faiss.vector_to_array(clus.centroids).reshape(k,d)
+        
+        # sample-to-centroid distances for each cluster 
+        Dcluster = [[] for c in range(k)]          
+        for im,i in enumerate(im2cluster):
             Dcluster[i].append(D[im][0])
-
-        # concentration estimation (phi)
+        
+        # concentration estimation (phi)        
         density = np.zeros(k)
-        for i, dist in enumerate(Dcluster):
-            if len(dist) > 1:
-                d = (np.asarray(dist) ** 0.5).mean() / np.log(len(dist) + 10)
-                density[i] = d
-
-        # if cluster only has one point, use the max to estimate its concentration
+        for i,dist in enumerate(Dcluster):
+            if len(dist)>1:
+                d = (np.asarray(dist)**0.5).mean()/np.log(len(dist)+10)            
+                density[i] = d     
+                
+        #if cluster only has one point, use the max to estimate its concentration        
         dmax = density.max()
-        for i, dist in enumerate(Dcluster):
-            if len(dist) <= 1:
-                density[i] = dmax
+        for i,dist in enumerate(Dcluster):
+            if len(dist)<=1:
+                density[i] = dmax 
 
-        density = density.clip(np.percentile(density, 10),
-                               np.percentile(density, 90))  # clamp extreme values for stability
-        density = args.temperature * density / density.mean()  # scale the mean to temperature
-
+        density = density.clip(np.percentile(density,10),np.percentile(density,90)) #clamp extreme values for stability
+        density = args.temperature*density/density.mean()  #scale the mean to temperature 
+        
         # convert to cuda Tensors for broadcast
         centroids = torch.Tensor(centroids).cuda()
-        centroids = nn.functional.normalize(centroids, p=2, dim=1)
+        centroids = nn.functional.normalize(centroids, p=2, dim=1)    
 
-        im2cluster = torch.LongTensor(im2cluster).cuda()
+        im2cluster = torch.LongTensor(im2cluster).cuda()               
         density = torch.Tensor(density).cuda()
-
+        
         results['centroids'].append(centroids)
         results['density'].append(density)
-        results['im2cluster'].append(im2cluster)
-
-    return results
+        results['im2cluster'].append(im2cluster)    
+        
+    return results 
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):

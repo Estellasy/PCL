@@ -7,8 +7,10 @@
 import torch
 import torch.nn as nn
 from random import sample
+import sys
+sys.path.append("/home/siyi/project/PCL/pcl")
 from head import Yolov8Head, MlpHead
-
+from backbone import resnet50
 
 class DetectionCL(nn.Module):
     """
@@ -22,25 +24,19 @@ class DetectionCL(nn.Module):
 
         # 创建编码器 其中num_classes=dim是fc层的输出维度
         self.encoder_q = nn.Sequential(
-            base_encoder(num_classes=dim),
+            resnet50(num_classes=dim),
             nn.Sequential(),    # mlp
             nn.Sequential()     # detection head
         )
         self.encoder_k = nn.Sequential(
-            base_encoder(num_classes=dim),
+            resnet50(num_classes=dim),
             nn.Sequential(),    # mlp
             nn.Sequential()     # detection head
         )
 
         # 硬编码mlp层
         if mlp:
-            dim_mlp = self.encoder_q[0].fc.weight.shape[1]
-            # 删除原avgpool/fc层 并替换mlp
-            self.encoder_q[0].avgpool = nn.Identity()
-            self.encoder_q[0].avgpool = nn.Identity()
-            self.encoder_q[0].fc = nn.Identity()
-            self.encoder_k[0].avgpool = nn.Identity()
-            self.encoder_k[0].fc = nn.Identity()
+            dim_mlp = 2048
 
             # mlp层
             self.encoder_k[1] = MlpHead(dim_mlp, dim_mlp, dim)
@@ -60,9 +56,12 @@ class DetectionCL(nn.Module):
         self.queue = nn.functional.normalize(self.queue, dim=0)
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
-        self.register_buffer("queue2", torch.randn(dim, r))
+        channels = 1024  # 这是 q_dense_flat 的通道维度
+        height, width = 7, 7  # 这是 q_dense_flat 的空间维度
+        self.register_buffer("queue2", torch.randn(channels, self.r, height, width))
         self.queue2 = nn.functional.normalize(self.queue2, dim=0)
         self.register_buffer("queue2_ptr", torch.zeros(1, dtype=torch.long))
+
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -80,11 +79,11 @@ class DetectionCL(nn.Module):
         batch_size = keys.shape[0]
 
         ptr = int(self.queue_ptr)
-        assert self.queue_len % batch_size == 0  # for simplicity
+        assert self.r % batch_size == 0  # for simplicity
 
         # replace the keys at ptr (dequeue and enqueue)
         self.queue[:, ptr:ptr + batch_size] = keys.transpose(0, 1)
-        ptr = (ptr + batch_size) % self.queue_len  # move pointer
+        ptr = (ptr + batch_size) % self.r  # move pointer
 
         self.queue_ptr[0] = ptr
 
@@ -96,13 +95,14 @@ class DetectionCL(nn.Module):
         batch_size = keys.shape[0]
 
         ptr = int(self.queue2_ptr)
-        assert self.queue_len % batch_size == 0  # for simplicity
+        assert self.queue2.size(1) % batch_size == 0  # for simplicity
 
         # replace the keys at ptr (dequeue and enqueue)
-        self.queue2[:, ptr:ptr + batch_size] = keys.transpose(0, 1)
-        ptr = (ptr + batch_size) % self.queue_len  # move pointer
+        self.queue2[:, ptr:ptr + batch_size, :, :] = keys.permute(1, 0, 2, 3)
+        ptr = (ptr + batch_size) % self.queue2.size(1)  # move pointer
 
         self.queue2_ptr[0] = ptr
+
 
     @torch.no_grad()
     def _batch_shuffle_ddp(self, x):
@@ -166,20 +166,23 @@ class DetectionCL(nn.Module):
         """
         if is_eval:
             # 获取encoder_k输出
-            k_b_list = self.encoderk_features(im_q)
+            k_b_list = self.get_encoderk_features(im_q)
+            print("k_b_list[-1]:", k_b_list[-1].shape)  # torch.Size([20, 2048, 7, 7])
             # mlp层输出
             k_global = self.encoder_k[1](k_b_list[-1])
+            print("k_global:", k_global.shape)
             # yolo head输出
             k_dense = self.encoder_k[2](k_b_list)
             k_global = nn.functional.normalize(k_global, dim=1)
             k_dense = nn.functional.normalize(k_dense, dim=1)
+            print(k_global.shape, k_dense.shape)
             return k_global, k_dense
 
         # 转为内存中的连续存储格式，提高访问效率
         im_q = im_q.contiguous()
         im_k = im_k.contiguous()
         # compute query features
-        q_b_list = self.encoderq_features(im_q)  # backbone features
+        q_b_list = self.get_encoderq_features(im_q)  # backbone features
         q_global = self.encoder_q[1](q_b_list[-1])
         q_dense = self.encoder_q[2](q_b_list)
 
@@ -211,19 +214,30 @@ class DetectionCL(nn.Module):
         l_global_pos = torch.einsum('nc,nc->n', [q_global, k_global]).unsqueeze(-1)  # positive samples
         l_global_neg = torch.einsum('nc,ck->nk', [q_global, self.queue.clone().detach()])  # negative samples
 
+        print("l_global_pos:", l_global_pos.shape)  # torch.Size([20, 1])
+        print("l_global_neg:", l_global_neg.shape)
+
         # For dense features, we need to reshape and compute logits accordingly
         # Reshape dense features to (N, C, H*W)
         q_dense_flat = q_dense.view(q_dense.size(0), q_dense.size(1), -1).permute(0, 2, 1)  # (N, H*W, C)
         k_dense_flat = k_dense.view(k_dense.size(0), k_dense.size(1), -1).permute(0, 2, 1)  # (N, H*W, C)
 
-        # Positive logits for dense features: Nx(H*W)
+
+        print("q_dense_flat:", q_dense_flat.shape)  # torch.Size([4, 49, 1024])
+        print("q_dense:", q_dense.shape)    # torch.Size([4, 1024, 7, 7])
+        # Positive logits for dense features: Nx(H*W)   
         l_dense_pos = torch.einsum('nqc,nqc->nq', [q_dense_flat, k_dense_flat]).view(q_dense.size(0), -1)
+        l_dense_pos = torch.unsqueeze(l_dense_pos, -1)
+        l_dense_neg = torch.einsum('nqc,ckhw->nqk', [q_dense_flat, self.queue2.clone().detach()]).view(q_dense.size(0), -1, self.queue2.size(1))
         # Negative logits for dense features: Nx(H*W) x (K)
-        l_dense_neg = torch.einsum('nqc,ck->nqk', [q_dense_flat, self.queue.clone().detach()]).view(q_dense.size(0), -1,
-                                                                                                    self.queue.size(0))
+        # l_dense_neg = torch.einsum('nqc,ck->nqk', [q_dense_flat, self.queue2.clone().detach()])
+        # l_dense_neg = l_dense_neg.view(q_dense.size(0), -1, self.queue2.size(1))
+        print("l_dense_pos:", l_dense_pos.shape)  # torch.Size([4, 49])
+        print("l_dense_neg:", l_dense_neg.shape)  # torch.Size([4, 49])
+
 
         logits_global = torch.cat([l_global_pos, l_global_neg], dim=1)  # Nx(1+K)
-        logits_dense = torch.cat([l_dense_pos, l_dense_neg], dim=1)  # Nx(H*W+H*W*K)
+        logits_dense = torch.cat([l_dense_pos, l_dense_neg], dim=2)  # Nx(H*W+H*W*K)
         # apply temperature
         logits_global /= self.T
         logits_dense /= self.T
@@ -305,6 +319,8 @@ class DetectionCL(nn.Module):
             result['dense'] = [logits_dense, labels_dense, None, None]
 
         return result
+        # return [item for sublist in result.values() for item in sublist if item is not None]
+
 
     def get_encoderq_features(self, im_q):
         features = im_q

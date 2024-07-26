@@ -79,11 +79,19 @@ class RandomImageFolderInstance(ImageFolderInstance):
             x_i = self.cutpaste_transform(x_i, x_a)
         # 应用MixUp增强
         # 应用 MixUp 增强
+        output = []
         if self.mixup_alpha > 0:
             lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
-            x_i = lam * x_i + (1 - lam) * x_b
+            print(type(x_i), type(x_b))
+            print(len(x_i))
+            for (i, b) in zip(x_i, x_b):
+                # print(i)
+                print(lam)
+                # print(b)
+                x = lam * i + (1 - lam) * b
+                output.append(x)
 
-        return x_i, index
+        return output, index
 
 
 class CutPasteTransform:

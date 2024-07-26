@@ -19,9 +19,9 @@ class MlpHead(nn.Module):
             nn.Linear(hid_channels, out_channels))
 
     def forward(self, x):
-        x = self.avgpool(x)
-        x = self.mlp(x)
-        return x
+        avgpooled_x = self.avgpool(x)
+        avgpooled_x = self.mlp(avgpooled_x.view(avgpooled_x.size(0), -1))
+        return avgpooled_x
 
 
 class Yolov8Head(nn.Module):
@@ -37,6 +37,10 @@ class Yolov8Head(nn.Module):
         self.c2f_3 = C2f(256 + c2, 512)
         self.conv3 = nn.Conv2d(512, 512, kernel_size=3, stride=2, padding=1)
         self.c2f_4 = C2f(512 + c4, 1024)
+
+        self.conv_fuse = nn.Conv2d(1792, 1024, kernel_size=1, stride=1, padding=0)
+        self.bn_fuse = nn.BatchNorm2d(1024)
+        self.relu_fuse = nn.ReLU(inplace=True)
 
     def forward(self, input_list):
         assert len(input_list) == 4
@@ -55,6 +59,7 @@ class Yolov8Head(nn.Module):
         x = torch.cat((x, hidden_x), dim=1)  # torch.Size([1, 768, 40, 40])
         x = self.c2f_3(x)  # torch.Size([1, 512, 40, 40])
         p2 = x
+        print(x.shape)
 
         x = self.conv3(x)  # torch.Size([1, 512, 20, 20])
         x = torch.cat((x, x1), dim=1)  # torch.Size([1, 2560, 20, 20])
@@ -63,11 +68,14 @@ class Yolov8Head(nn.Module):
 
         # 特征融合
         # Fusion process
-        p1 = nn.functional.adaptive_avg_pool2d(p1, (20, 20))  # torch.Size([1, 256, 20, 20])
-        p2 = nn.functional.adaptive_avg_pool2d(p2, (20, 20))  # torch.Size([1, 512, 20, 20])
+        p1 = nn.functional.adaptive_avg_pool2d(p1, (7, 7))  # torch.Size([1, 256, 20, 20])
+        p2 = nn.functional.adaptive_avg_pool2d(p2, (7, 7))  # torch.Size([1, 512, 20, 20])
         p3 = p3  # torch.Size([1, 1024, 20, 20])
 
+
+        print(p1.shape, p2.shape, p3.shape)
         fused = torch.cat((p1, p2, p3), dim=1)  # torch.Size([1, 1792, 20, 20])
+        print(fused.shape)
         fused = self.conv_fuse(fused)  # torch.Size([1, 1024, 20, 20])
         fused = self.bn_fuse(fused)
         fused = self.relu_fuse(fused)
