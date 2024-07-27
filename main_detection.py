@@ -14,6 +14,7 @@ import warnings
 from tqdm import tqdm
 import numpy as np
 import faiss
+from scipy.optimize import linear_sum_assignment
 
 import torch
 import torch.nn as nn
@@ -24,6 +25,7 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
@@ -322,28 +324,29 @@ def main_worker(gpu, ngpus_per_node, args):
                 global_features[torch.norm(global_features,dim=1)>1.5] /= 2 # account for the few samples that are computed twice  
                 global_features = global_features.numpy()
                 cluster_result_global = run_kmeans(global_features, args)
-                print("global")
+                # print("global")
                 # dense
                 dense_features = dense_features.view(dense_features.size(0), -1)  # Flatten dense features
                 dense_features[dense_features.norm(dim=1) > 1.5] /= 2
                 dense_features = dense_features.numpy()
                 cluster_result_dense = run_kmeans(dense_features, args)
+                # cluster_result_dense = run_kmeans_emd(dense_features, args)
             
-                print("dense")
+                # print("dense")
             dist.barrier()  
-            print("dist bug")
+            # print("dist bug")
             # broadcast clustering result
             for k, data_list in cluster_result_global.items():
                 for data_tensor in data_list:                
                     dist.broadcast(data_tensor, 0, async_op=False)     
 
-                print("broadcast global")
+                # print("broadcast global")
 
             for k, data_list in cluster_result_dense.items():
                 for data_tensor in data_list:                
                     dist.broadcast(data_tensor, 0, async_op=False)  
 
-                print("broadcast dense")   
+                # print("broadcast dense")   
 
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -352,7 +355,7 @@ def main_worker(gpu, ngpus_per_node, args):
         # train for one epoch
         train(train_loader, model, criterion, emd_loss_fn, optimizer, epoch, args, cluster_result_global, cluster_result_dense)
 
-        if (epoch+1)%5==0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
+        if (epoch+1)%50==0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0)):
             save_checkpoint({
                 'epoch': epoch + 1,
@@ -399,22 +402,23 @@ def train(train_loader, model, criterion, emd_loss_fn, optimizer, epoch, args, c
         global_output, global_target, global_output_proto, global_target_proto = result['global']
         dense_output, dense_target, dense_output_proto, dense_target_proto = result['dense']
         # InfoNCE loss global
-        print("global_output:", global_output.shape)
-        print("global_target:", global_target.shape)
+        # print("global_output:", global_output.shape)
+        # print("global_target:", global_target.shape)
         global_loss = criterion(global_output, global_target)
         loss += global_loss
         # ProtoNCE loss global
         if global_output_proto is not None:
-            global_proto_loss = 0
+            g_p_l = 0
             for proto_out, proto_target in zip(global_output_proto, global_target_proto):
-                global_proto_loss += criterion(proto_out, proto_target)
+                g_p_l += criterion(proto_out, proto_target)
                 accp = accuracy(proto_out, proto_target)[0]
                 acc_proto_global.update(accp[0], images[0].size(0))
-            global_proto_loss /= len(args.num_cluster)
+            g_p_l /= len(args.num_cluster)
+            global_proto_loss = g_p_l
             loss += global_proto_loss
 
-        print("dense_output:", dense_output.shape)
-        print("dense_target:", dense_target.shape)
+        # print("dense_output:", dense_output.shape)
+        # print("dense_target:", dense_target.shape)
         # 将 dense_output 展平成 (N, C) 形状
         N, D, C = dense_output.size()
         dense_output_flattened = dense_output.view(N * D, C)
@@ -424,13 +428,14 @@ def train(train_loader, model, criterion, emd_loss_fn, optimizer, epoch, args, c
         dense_loss = criterion(dense_output_flattened, dense_target_expanded)
         loss += dense_loss
         # EMD loss dense (using EMD instead of ProtoNCE for dense features)
-        print(dense_output_proto is not None)
+        # print(dense_output_proto is not None)
         if dense_output_proto is not None:
             dense_proto_loss = 0
             for proto_out, proto_target in zip(dense_output_proto, dense_target_proto):
-                print("proto_out:", proto_out.shape)
-                print("proto_target:", proto_target.shape)
-                dense_proto_loss += emd_loss_fn(proto_out, proto_target)
+                proto_out = proto_out.squeeze(1)  # 移除大小为1的维度
+                # print("proto_out:", proto_out.shape)
+                # print("proto_target:", proto_target.shape)
+                dense_proto_loss += criterion(proto_out, proto_target)
                 accp = accuracy(proto_out, proto_target)[0]
                 acc_proto_dense.update(accp[0], images[0].size(0))
             dense_proto_loss /= len(args.num_cluster)
@@ -454,19 +459,19 @@ def train(train_loader, model, criterion, emd_loss_fn, optimizer, epoch, args, c
 
 
 def compute_features(eval_loader, model, args):
-    print('Computing features')
+    # print('Computing features')
     model.eval()
     # global features 
     global_features = torch.zeros(len(eval_loader.dataset),args.low_dim).cuda()
-    print("global_features:", global_features.shape)
+    # print("global_features:", global_features.shape)
     # dense features
     dense_features = torch.zeros(len(eval_loader.dataset), 1024, 7, 7).cuda()  # Based on the YOLOv8 head output
-    print("dense_features:", dense_features.shape)
+    # print("dense_features:", dense_features.shape)
 
     for i, (images, index) in enumerate(tqdm(eval_loader)):
         with torch.no_grad():
             images = images.cuda(non_blocking=True)
-            print("images:", images.shape)
+            # print("images:", images.shape)
             feat_global, feat_dense = model(images, is_eval=True)
             global_features[index] = feat_global
             dense_features[index] = feat_dense
@@ -545,6 +550,123 @@ def run_kmeans(x, args):
         results['im2cluster'].append(im2cluster)    
         
     return results 
+
+def compute_emd(x, y):
+    # 计算两个分布之间的EMD
+    # x, y 应该是两个向量或直方图，代表分布
+    x = np.array(x)
+    y = np.array(y)
+    cost_matrix = np.abs(x[:, np.newaxis] - y[np.newaxis, :])
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    emd_distance = cost_matrix[row_ind, col_ind].sum()
+    return emd_distance
+
+
+def sinkhorn_knopp(a, b, cost_matrix, epsilon, max_iter=100):
+    """
+    Compute Sinkhorn distance (approximation of EMD) between distributions a and b
+    with regularization parameter epsilon.
+    """
+    n, m = cost_matrix.shape
+    u = torch.ones(n, dtype=torch.float32, device=a.device) / n
+    v = torch.ones(m, dtype=torch.float32, device=b.device) / m
+
+    K = torch.exp(-cost_matrix / epsilon)
+
+    for _ in range(max_iter):
+        u = a / (K @ v)
+        v = b / (K.t() @ u)
+
+    transport_plan = torch.diag(u) @ K @ torch.diag(v)
+    distance = torch.sum(transport_plan * cost_matrix)
+
+    return distance, transport_plan
+
+
+def compute_emd_torch(x, y, epsilon=1e-3, max_iter=100):
+    """
+    Compute the EMD between two distributions using Sinkhorn-Knopp algorithm.
+    x, y should be histograms or distributions.
+    """
+    assert x.shape == y.shape, "Input distributions must have the same shape."
+    n = x.shape[0]
+
+    cost_matrix = torch.cdist(x.unsqueeze(0), y.unsqueeze(0), p=2).squeeze(0)
+    print("cost_matrix.shape:", cost_matrix.shape)
+    a = torch.ones(n, dtype=torch.float32, device=x.device) / n
+    b = torch.ones(n, dtype=torch.float32, device=y.device) / n
+
+    emd, transport_plan = sinkhorn_knopp(a, b, cost_matrix, epsilon, max_iter)
+
+    return emd.item()
+
+
+def run_kmeans_emd(x, args):
+    print("performing kmeans clustering with EMD distance")
+    results = {"im2cluster": [], "centroids": [], "density": []}
+
+    for seed, num_cluster in enumerate(args.num_cluster):
+        d = x.shape[1]
+        k = int(num_cluster)
+        clus = faiss.Clustering(d, k)
+        clus.verbose = True
+        clus.niter = 20
+        clus.nredo = 5
+        clus.seed = seed
+        clus.max_points_per_centroid = 1000
+        clus.min_points_per_centroid = 10
+
+        res = faiss.StandardGpuResources()
+        cfg = faiss.GpuIndexFlatConfig()
+        cfg.useFloat16 = False
+        cfg.device = args.gpu
+        index = faiss.GpuIndexFlatL2(res, d, cfg)
+
+        clus.train(x, index)
+
+        centroids = faiss.vector_to_array(clus.centroids).reshape(k, d)
+        centroids = torch.tensor(centroids, dtype=torch.float32, device="cuda")
+
+        D = torch.zeros((x.shape[0], k), device="cuda")
+
+        x = torch.from_numpy(x).to("cuda")
+        # 手动计算
+        for i in range(x.shape[0]):
+            for j in range(k):
+                D[i, j] = compute_emd_torch(x[i], centroids[j])
+
+        I = torch.argmin(D, axis=1).cpu().numpy()
+        im2cluster = [int(n) for n in I]
+
+        Dcluster = [[] for _ in range(k)]
+        for im, i in enumerate(im2cluster):
+            Dcluster[i].append(D[im][i].item())
+
+        density = np.zeros(k)
+        for i, dist in enumerate(Dcluster):
+            if len(dist) > 1:
+                d = (np.asarray(dist) ** 0.5).mean() / np.log(len(dist) + 10)
+                density[i] = d
+
+        dmax = density.max()
+        for i, dist in enumerate(Dcluster):
+            if len(dist) <= 1:
+                density[i] = dmax
+
+        density = np.clip(density, np.percentile(density, 10), np.percentile(density, 90))
+        density = args.temperature * density / density.mean()
+
+        centroids = torch.Tensor(centroids).cuda()
+        centroids = F.normalize(centroids, p=2, dim=1)
+
+        im2cluster = torch.LongTensor(im2cluster).cuda()
+        density = torch.Tensor(density).cuda()
+
+        results['centroids'].append(centroids)
+        results['density'].append(density)
+        results['im2cluster'].append(im2cluster)
+
+    return results
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):

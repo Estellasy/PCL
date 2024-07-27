@@ -59,7 +59,6 @@ class Yolov8Head(nn.Module):
         x = torch.cat((x, hidden_x), dim=1)  # torch.Size([1, 768, 40, 40])
         x = self.c2f_3(x)  # torch.Size([1, 512, 40, 40])
         p2 = x
-        print(x.shape)
 
         x = self.conv3(x)  # torch.Size([1, 512, 20, 20])
         x = torch.cat((x, x1), dim=1)  # torch.Size([1, 2560, 20, 20])
@@ -73,9 +72,7 @@ class Yolov8Head(nn.Module):
         p3 = p3  # torch.Size([1, 1024, 20, 20])
 
 
-        print(p1.shape, p2.shape, p3.shape)
         fused = torch.cat((p1, p2, p3), dim=1)  # torch.Size([1, 1792, 20, 20])
-        print(fused.shape)
         fused = self.conv_fuse(fused)  # torch.Size([1, 1024, 20, 20])
         fused = self.bn_fuse(fused)
         fused = self.relu_fuse(fused)

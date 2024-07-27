@@ -167,15 +167,15 @@ class DetectionCL(nn.Module):
         if is_eval:
             # 获取encoder_k输出
             k_b_list = self.get_encoderk_features(im_q)
-            print("k_b_list[-1]:", k_b_list[-1].shape)  # torch.Size([20, 2048, 7, 7])
+            # print("k_b_list[-1]:", k_b_list[-1].shape)  # torch.Size([20, 2048, 7, 7])
             # mlp层输出
             k_global = self.encoder_k[1](k_b_list[-1])
-            print("k_global:", k_global.shape)
+            # print("k_global:", k_global.shape)
             # yolo head输出
             k_dense = self.encoder_k[2](k_b_list)
             k_global = nn.functional.normalize(k_global, dim=1)
             k_dense = nn.functional.normalize(k_dense, dim=1)
-            print(k_global.shape, k_dense.shape)
+            # print(k_global.shape, k_dense.shape)
             return k_global, k_dense
 
         # 转为内存中的连续存储格式，提高访问效率
@@ -214,8 +214,8 @@ class DetectionCL(nn.Module):
         l_global_pos = torch.einsum('nc,nc->n', [q_global, k_global]).unsqueeze(-1)  # positive samples
         l_global_neg = torch.einsum('nc,ck->nk', [q_global, self.queue.clone().detach()])  # negative samples
 
-        print("l_global_pos:", l_global_pos.shape)  # torch.Size([20, 1])
-        print("l_global_neg:", l_global_neg.shape)
+        # print("l_global_pos:", l_global_pos.shape)  # torch.Size([20, 1])
+        # print("l_global_neg:", l_global_neg.shape)
 
         # For dense features, we need to reshape and compute logits accordingly
         # Reshape dense features to (N, C, H*W)
@@ -223,8 +223,8 @@ class DetectionCL(nn.Module):
         k_dense_flat = k_dense.view(k_dense.size(0), k_dense.size(1), -1).permute(0, 2, 1)  # (N, H*W, C)
 
 
-        print("q_dense_flat:", q_dense_flat.shape)  # torch.Size([4, 49, 1024])
-        print("q_dense:", q_dense.shape)    # torch.Size([4, 1024, 7, 7])
+        # print("q_dense_flat:", q_dense_flat.shape)  # torch.Size([4, 49, 1024])
+        # print("q_dense:", q_dense.shape)    # torch.Size([4, 1024, 7, 7])
         # Positive logits for dense features: Nx(H*W)   
         l_dense_pos = torch.einsum('nqc,nqc->nq', [q_dense_flat, k_dense_flat]).view(q_dense.size(0), -1)
         l_dense_pos = torch.unsqueeze(l_dense_pos, -1)
@@ -232,8 +232,8 @@ class DetectionCL(nn.Module):
         # Negative logits for dense features: Nx(H*W) x (K)
         # l_dense_neg = torch.einsum('nqc,ck->nqk', [q_dense_flat, self.queue2.clone().detach()])
         # l_dense_neg = l_dense_neg.view(q_dense.size(0), -1, self.queue2.size(1))
-        print("l_dense_pos:", l_dense_pos.shape)  # torch.Size([4, 49])
-        print("l_dense_neg:", l_dense_neg.shape)  # torch.Size([4, 49])
+        # print("l_dense_pos:", l_dense_pos.shape)  # torch.Size([4, 49])
+        # print("l_dense_neg:", l_dense_neg.shape)  # torch.Size([4, 49])
 
 
         logits_global = torch.cat([l_global_pos, l_global_neg], dim=1)  # Nx(1+K)
@@ -295,20 +295,36 @@ class DetectionCL(nn.Module):
                 pos_proto_id_dense = im2cluster[index]
                 pos_prototypes_dense = prototypes[pos_proto_id_dense]
 
+                # print(f"pos_proto_id_dense shape: {pos_proto_id_dense.shape}")
+                # print(f"pos_prototypes_dense shape: {pos_prototypes_dense.shape}")
+
                 all_proto_id_dense = [i for i in range(im2cluster.max() + 1)]
                 neg_proto_id_dense = set(all_proto_id_dense) - set(pos_proto_id_dense.tolist())
                 neg_proto_id_dense = sample(neg_proto_id_dense, self.r)
                 neg_prototypes_dense = prototypes[neg_proto_id_dense]
 
+                # # print(f"neg_proto_id_dense length: {len(neg_proto_id_dense)}")
+                # # print(f"neg_prototypes_dense shape: {neg_prototypes_dense.shape}")
+
                 proto_selected_dense = torch.cat([pos_prototypes_dense, neg_prototypes_dense], dim=0)
-                logits_proto_dense = torch.mm(q_dense_flat.view(-1, q_dense_flat.size(2)),
-                                              proto_selected_dense.t()).view(q_dense_flat.size(0), -1,
-                                                                             proto_selected_dense.size(0))
+                # # print(f"proto_selected_dense shape: {proto_selected_dense.shape}")
+
+                # print(q_dense_flat.shape)
+                # temp = q_dense_flat.reshape(q_dense_flat.size(0), -1)
+                # print(temp.shape)
+                logits_proto_dense = torch.mm(q_dense_flat.reshape(q_dense_flat.size(0), -1),
+                                            proto_selected_dense.t()).reshape(q_dense_flat.size(0), -1,
+                                                                            proto_selected_dense.size(0))
+                # print(f"logits_proto_dense shape: {logits_proto_dense.shape}")
 
                 labels_proto_dense = torch.linspace(0, q_dense_flat.size(0) - 1,
                                                     steps=q_dense_flat.size(0)).long().cuda()
+                # print(f"labels_proto_dense shape: {labels_proto_dense.shape}")
+
                 temp_proto_dense = density[
                     torch.cat([pos_proto_id_dense, torch.LongTensor(neg_proto_id_dense).cuda()], dim=0)]
+                # print(f"temp_proto_dense shape: {temp_proto_dense.shape}")
+
                 logits_proto_dense /= temp_proto_dense
 
                 proto_labels_dense.append(labels_proto_dense)
@@ -319,8 +335,7 @@ class DetectionCL(nn.Module):
             result['dense'] = [logits_dense, labels_dense, None, None]
 
         return result
-        # return [item for sublist in result.values() for item in sublist if item is not None]
-
+    
 
     def get_encoderq_features(self, im_q):
         features = im_q

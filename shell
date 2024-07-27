@@ -26,7 +26,7 @@ python main_pcl_debug.py /home/siyi/DefectDetection/CL_for_Real/PCLv1/data/hg --
 
 
 # Train for new
-python main_detection.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir exp/8_9_10 --dist-url 'tcp://localhost:10002' --num-cluster '8,9,10'  --pcl-r 4 --seed 0 --warmup-epoch 20 --epochs 300
+python main_detection.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir exp/8_9_10 --dist-url 'tcp://localhost:10002' --num-cluster '8,9,10'  --pcl-r 4 --seed 0 --warmup-epoch 0 --epochs 300
 
 
 这是main_detection的完整代码，
@@ -435,3 +435,13 @@ python
     self.register_buffer("queue2_ptr", torch.zeros(1, dtype=torch.long))
 看上去dense应该存储在queue2中，但是queue2的大小有问题，请帮我修正。
 print("q_dense_flat:", q_dense_flat.shape) # torch.Size([4, 49, 1024])
+
+
+# debug prompt
+代码在下面的地方报错：
+"""
+"""
+报错信息如下
+
+# Train for new
+python main_detection.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir exp/8_9_10 --dist-url 'tcp://localhost:10002' --num-cluster '8,9,10'  --pcl-r 4 --seed 0 --warmup-epoch 50 --epochs 300

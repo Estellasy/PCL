@@ -82,12 +82,9 @@ class RandomImageFolderInstance(ImageFolderInstance):
         output = []
         if self.mixup_alpha > 0:
             lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
-            print(type(x_i), type(x_b))
-            print(len(x_i))
+            # print(type(x_i), type(x_b))
+            # print(len(x_i))
             for (i, b) in zip(x_i, x_b):
-                # print(i)
-                print(lam)
-                # print(b)
                 x = lam * i + (1 - lam) * b
                 output.append(x)
 
