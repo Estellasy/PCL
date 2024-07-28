@@ -58,7 +58,7 @@ class DetectionCL(nn.Module):
 
         channels = 1024  # 这是 q_dense_flat 的通道维度
         height, width = 7, 7  # 这是 q_dense_flat 的空间维度
-        self.register_buffer("queue2", torch.randn(channels, self.r, height, width))
+        self.register_buffer("queue2", torch.randn(channels, height, width, self.r))
         self.queue2 = nn.functional.normalize(self.queue2, dim=0)
         self.register_buffer("queue2_ptr", torch.zeros(1, dtype=torch.long))
 
