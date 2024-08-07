@@ -60,6 +60,7 @@ class DetectionCL(nn.Module):
         height, width = 7, 7  # 这是 q_dense_flat 的空间维度
         self.register_buffer("queue2", torch.randn(channels, self.r, height, width))
         self.queue2 = nn.functional.normalize(self.queue2, dim=0)
+        print("queue2:", self.queue2.shape)
         self.register_buffer("queue2_ptr", torch.zeros(1, dtype=torch.long))
 
 
@@ -219,6 +220,9 @@ class DetectionCL(nn.Module):
 
         # For dense features, we need to reshape and compute logits accordingly
         # Reshape dense features to (N, C, H*W)
+        print("q_dense:", q_dense.shape)  # torch.Size([20, 2048, 7, 7])
+        print("self.queue2.clone().detach():", self.queue2.clone().detach().shape)
+        
         q_dense_flat = q_dense.view(q_dense.size(0), q_dense.size(1), -1).permute(0, 2, 1)  # (N, H*W, C)
         k_dense_flat = k_dense.view(k_dense.size(0), k_dense.size(1), -1).permute(0, 2, 1)  # (N, H*W, C)
 
