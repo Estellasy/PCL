@@ -25,3 +25,7 @@ python main_detection.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a r
 
 # Train for aug pcl
 python main_pcl_aug.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir exp/8_9_10 --dist-url 'tcp://localhost:10002' --num-cluster '8,9,10' --pcl-r 4 --seed 0 --warmup-epoch 50 --epochs 300 > "logs/aug/$(date +'%Y-%m-%d_%H-%M-%S').log"
+
+
+# For debug
+python main_detection.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir exp/debug --dist-url 'tcp://localhost:10002' --num-cluster '8,9,10' --pcl-r 4 --seed 0 --warmup-epoch 30 --epochs 300 > "logs/aug/$(date +'%Y-%m-%d_%H-%M-%S').log"

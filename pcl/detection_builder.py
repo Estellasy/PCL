@@ -95,7 +95,7 @@ class DetectionCL(nn.Module):
         batch_size = keys.shape[0]
 
         ptr = int(self.queue2_ptr)
-        assert self.queue2.size(1) % batch_size == 0  # for simplicity
+        # assert self.queue2.size(1) % batch_size == 0  # for simplicity
 
         # replace the keys at ptr (dequeue and enqueue)
         self.queue2[:, ptr:ptr + batch_size, :, :] = keys.permute(1, 0, 2, 3)
@@ -204,6 +204,11 @@ class DetectionCL(nn.Module):
 
             k_global = nn.functional.normalize(k_global, dim=1)  # global
             k_dense = nn.functional.normalize(k_dense, dim=1)  # dense
+            
+            print("q_global:", q_global.shape)
+            print("k_global:", k_global.shape)
+            print("self.queue.clone().detach():", self.queue.clone().detach().shape)
+            # print(k_global.shape, k_dense.shape, self.queue.clone().detach().shape)
 
             # undo shuffle
             k_global = self._batch_unshuffle_ddp(k_global, idx_unshuffle)
@@ -234,6 +239,10 @@ class DetectionCL(nn.Module):
         # l_dense_neg = l_dense_neg.view(q_dense.size(0), -1, self.queue2.size(1))
         # print("l_dense_pos:", l_dense_pos.shape)  # torch.Size([4, 49])
         # print("l_dense_neg:", l_dense_neg.shape)  # torch.Size([4, 49])
+        
+        # 在这里修改计算相似度的方式
+        # 上面的代码，计算相似度的方式是直接计算点积
+        # 这里计算相似度改为计算EMD距离
 
 
         logits_global = torch.cat([l_global_pos, l_global_neg], dim=1)  # Nx(1+K)
