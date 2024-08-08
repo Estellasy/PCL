@@ -1,17 +1,10 @@
-"""
-@Description :
-@Author      : siyiren1@foxmail.com
-@Time        : 2024/07/22 00:08:11
-"""
-
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 
-class SinkhornSim(torch.nn.Module):
+class SinkhornDistance(torch.nn.Module):
     def __init__(self, eps=1e-3, max_iter=100, reduction='sum'):
-        super(SinkhornSim, self).__init__()
+        super(SinkhornDistance, self).__init__()
         self.eps = eps
         self.max_iter = max_iter
         self.reduction = reduction
@@ -49,12 +42,20 @@ class SinkhornSim(torch.nn.Module):
         elif self.reduction == 'sum':
             distance = distance.sum()
 
-        return torch.exp(-distance)
+        return distance
 
+# 示例使用
+x1 = torch.randn(1, 1024, 7, 7)
+x2 = torch.randn(1, 1024, 7, 7)
+sinkhorn = SinkhornDistance()
+distance = sinkhorn(x1, x2)
+print(torch.exp(-distance))
 
-if __name__ == "__main__":
-    x1 = torch.randn(1, 1024, 7, 7)
-    x2 = torch.randn(1, 1024, 7, 7)
-    ssim = SinkhornSim()
-    print(ssim(x1, x2))
-    print(ssim(x1, x1))
+distance2 = sinkhorn(x1, x1)
+print(torch.exp(-distance2))
+
+# x3 = torch.randn(1, 1024, 7, 7)
+x3 = x1 * 1.01
+distance3 = sinkhorn(x1, x3)
+print(torch.exp(-distance3))
+

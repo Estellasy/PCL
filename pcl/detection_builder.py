@@ -8,9 +8,12 @@ import torch
 import torch.nn as nn
 from random import sample
 import sys
-sys.path.append("/home/siyi/project/PCL/pcl")
+
+sys.path.append("../PCL/pcl")
 from head import Yolov8Head, MlpHead
 from backbone import resnet50
+from loss import SinkhornSim
+
 
 class DetectionCL(nn.Module):
     """
@@ -25,13 +28,13 @@ class DetectionCL(nn.Module):
         # 创建编码器 其中num_classes=dim是fc层的输出维度
         self.encoder_q = nn.Sequential(
             resnet50(num_classes=dim),
-            nn.Sequential(),    # mlp
-            nn.Sequential()     # detection head
+            nn.Sequential(),  # mlp
+            nn.Sequential()  # detection head
         )
         self.encoder_k = nn.Sequential(
             resnet50(num_classes=dim),
-            nn.Sequential(),    # mlp
-            nn.Sequential()     # detection head
+            nn.Sequential(),  # mlp
+            nn.Sequential()  # detection head
         )
 
         # 硬编码mlp层
@@ -62,7 +65,6 @@ class DetectionCL(nn.Module):
         self.queue2 = nn.functional.normalize(self.queue2, dim=0)
         print("queue2:", self.queue2.shape)
         self.register_buffer("queue2_ptr", torch.zeros(1, dtype=torch.long))
-
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -103,7 +105,6 @@ class DetectionCL(nn.Module):
         ptr = (ptr + batch_size) % self.queue2.size(1)  # move pointer
 
         self.queue2_ptr[0] = ptr
-
 
     @torch.no_grad()
     def _batch_shuffle_ddp(self, x):
@@ -191,7 +192,7 @@ class DetectionCL(nn.Module):
         q_dense = nn.functional.normalize(q_dense, dim=1)
 
         # compute key features
-        with torch.no_grad():   # no gradient to keys
+        with torch.no_grad():  # no gradient to keys
             self._momentum_update_key_encoder()  # update the key encoder
 
             # shuffle for making use of BN
@@ -222,23 +223,45 @@ class DetectionCL(nn.Module):
         # Reshape dense features to (N, C, H*W)
         print("q_dense:", q_dense.shape)  # torch.Size([20, 2048, 7, 7])
         print("self.queue2.clone().detach():", self.queue2.clone().detach().shape)
-        
+
+        # 在这里修改l_dense_pos和l_dense_neg的计算方式
+        l_dense_pos = []
+        ssim = SinkhornSim()
+        for i in range(q_dense.size(0)):  # (N, C, H, W)
+            q_dense_i = q_dense[i].unsqueeze(0)  # (1, C, H, W)
+            k_dense_i = k_dense[i].unsqueeze(0)  # (1, C, H, W)
+            l_dense_pos.append(ssim(q_dense_i, k_dense_i))
+        l_dense_pos = torch.stack(l_dense_pos, dim=0)  # (N, 1)
+
+        l_dense_neg = []
+        for neg_sample in self.queue2.clone().detach(): # 对于每个负样本
+            neg_sample = neg_sample.unsqueeze(0)  # (1, C, H, W)
+            temp_neg = []
+            for i in range(q_dense.size(0)):  # (N, C, H, W)
+                q_dense_i = q_dense[i].unsqueeze(0)  # (1, C, H, W)
+                temp_neg.append(ssim(q_dense_i, neg_sample))
+            l_dense_neg.append(torch.stack(temp_neg, dim=0))  # (N, 1)
+        # 这里l_dense_neg的维度有待商榷
+        l_dense_neg = torch.stack(l_dense_neg).permute(1, 0).squeeze(-1)  # (N, K)
+
+
         q_dense_flat = q_dense.view(q_dense.size(0), q_dense.size(1), -1).permute(0, 2, 1)  # (N, H*W, C)
         k_dense_flat = k_dense.view(k_dense.size(0), k_dense.size(1), -1).permute(0, 2, 1)  # (N, H*W, C)
 
-
         # print("q_dense_flat:", q_dense_flat.shape)  # torch.Size([4, 49, 1024])
         # print("q_dense:", q_dense.shape)    # torch.Size([4, 1024, 7, 7])
-        # Positive logits for dense features: Nx(H*W)   
+        # Positive logits for dense features: Nx(H*W)
         l_dense_pos = torch.einsum('nqc,nqc->nq', [q_dense_flat, k_dense_flat]).view(q_dense.size(0), -1)
         l_dense_pos = torch.unsqueeze(l_dense_pos, -1)
-        l_dense_neg = torch.einsum('nqc,ckhw->nqk', [q_dense_flat, self.queue2.clone().detach()]).view(q_dense.size(0), -1, self.queue2.size(1))
+        l_dense_neg = torch.einsum('nqc,ckhw->nqk', [q_dense_flat, self.queue2.clone().detach()]).view(q_dense.size(0),
+                                                                                                       -1,
+                                                                                                       self.queue2.size(
+                                                                                                           1))
         # Negative logits for dense features: Nx(H*W) x (K)
         # l_dense_neg = torch.einsum('nqc,ck->nqk', [q_dense_flat, self.queue2.clone().detach()])
         # l_dense_neg = l_dense_neg.view(q_dense.size(0), -1, self.queue2.size(1))
         # print("l_dense_pos:", l_dense_pos.shape)  # torch.Size([4, 49])
         # print("l_dense_neg:", l_dense_neg.shape)  # torch.Size([4, 49])
-
 
         logits_global = torch.cat([l_global_pos, l_global_neg], dim=1)  # Nx(1+K)
         logits_dense = torch.cat([l_dense_pos, l_dense_neg], dim=2)  # Nx(H*W+H*W*K)
@@ -259,7 +282,8 @@ class DetectionCL(nn.Module):
         if cluster_global is not None:
             proto_labels_global = []
             proto_logits_global = []
-            for n, (im2cluster, prototypes, density) in enumerate(zip(cluster_global['im2cluster'], cluster_global['centroids'], cluster_global['density'])):
+            for n, (im2cluster, prototypes, density) in enumerate(
+                    zip(cluster_global['im2cluster'], cluster_global['centroids'], cluster_global['density'])):
                 # get positive prototypes
                 pos_proto_id_global = im2cluster[index]
                 pos_prototypes_global = prototypes[pos_proto_id_global]
@@ -281,7 +305,8 @@ class DetectionCL(nn.Module):
                 labels_proto_global = torch.linspace(0, q_global.size(0) - 1, steps=q_global.size(0)).long().cuda()
 
                 # scaling temperatures for the selected prototypes
-                temp_proto_global = density[torch.cat([pos_proto_id_global, torch.LongTensor(neg_proto_id_global).cuda()], dim=0)]
+                temp_proto_global = density[
+                    torch.cat([pos_proto_id_global, torch.LongTensor(neg_proto_id_global).cuda()], dim=0)]
                 logits_proto_global /= temp_proto_global
 
                 proto_labels_global.append(labels_proto_global)
@@ -291,11 +316,11 @@ class DetectionCL(nn.Module):
         else:
             result['global'] = [logits_global, labels_global, None, None]
 
-
         if cluster_dense is not None:
             proto_labels_dense = []
             proto_logits_dense = []
-            for n, (im2cluster, prototypes, density) in enumerate(zip(cluster_dense['im2cluster'], cluster_dense['centroids'], cluster_dense['density'])):
+            for n, (im2cluster, prototypes, density) in enumerate(
+                    zip(cluster_dense['im2cluster'], cluster_dense['centroids'], cluster_dense['density'])):
                 pos_proto_id_dense = im2cluster[index]
                 pos_prototypes_dense = prototypes[pos_proto_id_dense]
 
@@ -317,8 +342,8 @@ class DetectionCL(nn.Module):
                 # temp = q_dense_flat.reshape(q_dense_flat.size(0), -1)
                 # print(temp.shape)
                 logits_proto_dense = torch.mm(q_dense_flat.reshape(q_dense_flat.size(0), -1),
-                                            proto_selected_dense.t()).reshape(q_dense_flat.size(0), -1,
-                                                                            proto_selected_dense.size(0))
+                                              proto_selected_dense.t()).reshape(q_dense_flat.size(0), -1,
+                                                                                proto_selected_dense.size(0))
                 # print(f"logits_proto_dense shape: {logits_proto_dense.shape}")
 
                 labels_proto_dense = torch.linspace(0, q_dense_flat.size(0) - 1,
@@ -339,7 +364,6 @@ class DetectionCL(nn.Module):
             result['dense'] = [logits_dense, labels_dense, None, None]
 
         return result
-    
 
     def get_encoderq_features(self, im_q):
         features = im_q
@@ -363,6 +387,7 @@ class DetectionCL(nn.Module):
                 output_list.append(features)
         return output_list
 
+
 # utils
 @torch.no_grad()
 def concat_all_gather(tensor):
@@ -371,7 +396,7 @@ def concat_all_gather(tensor):
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
     tensors_gather = [torch.ones_like(tensor)
-        for _ in range(torch.distributed.get_world_size())]
+                      for _ in range(torch.distributed.get_world_size())]
     torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
 
     output = torch.cat(tensors_gather, dim=0)
