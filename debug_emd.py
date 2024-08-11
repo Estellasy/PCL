@@ -3,7 +3,7 @@ import torch.nn.functional as F
 
 
 class SinkhornDistance(torch.nn.Module):
-    def __init__(self, eps=1e-3, max_iter=100, reduction='sum'):
+    def __init__(self, eps=1e-3, max_iter=100, reduction='mean'):
         super(SinkhornDistance, self).__init__()
         self.eps = eps
         self.max_iter = max_iter
@@ -49,13 +49,30 @@ x1 = torch.randn(1, 1024, 7, 7)
 x2 = torch.randn(1, 1024, 7, 7)
 sinkhorn = SinkhornDistance()
 distance = sinkhorn(x1, x2)
-print(torch.exp(-distance))
+print(distance)
 
 distance2 = sinkhorn(x1, x1)
-print(torch.exp(-distance2))
+print(distance)
 
 # x3 = torch.randn(1, 1024, 7, 7)
 x3 = x1 * 1.01
 distance3 = sinkhorn(x1, x3)
-print(torch.exp(-distance3))
+print(distance)
 
+# 计算x1和x2的余弦相似度
+print(torch.nn.functional.cosine_similarity(x1, x2).mean())
+
+print(torch.nn.functional.cosine_similarity(x1, x1).mean())
+
+print(torch.nn.functional.cosine_similarity(x1, x3).mean())
+
+
+flattened_x1 = x1.flatten(start_dim=2, end_dim=3)
+flattened_x2 = x2.flatten(start_dim=2, end_dim=3)
+flattened_x3 = x3.flatten(start_dim=2, end_dim=3)
+
+print(torch.nn.functional.cosine_similarity(flattened_x1, flattened_x2).mean())
+
+print(torch.nn.functional.cosine_similarity(flattened_x1, flattened_x1).mean())
+
+print(torch.nn.functional.cosine_similarity(flattened_x1, flattened_x3).mean())
