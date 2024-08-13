@@ -292,3 +292,40 @@ def run_kmeans(x, args):
 """
 
 对于results_dense['centroids']，里面的元素shape应该是(1024,7,7)
+
+
+# Sliced Wasserstein Distance
+https://github.com/tchambon/A-Sliced-Wasserstein-Loss-for-Neural-Texture-Synthesis/blob/main/texture_optimization_slicing.py
+这个要是再实现不了，那就别干了，换个思路。
+无论能不能做出来都写到论文里。尽早开始第二个工作。
+使用Sliced Wasserstein Distance进行相似度计算。
+```python
+def slicing_loss(image_generated, image_example):
+    # generate VGG19 activations
+    list_activations_generated = vgg(image_generated)
+    list_activations_example   = vgg(image_example)
+    
+    # iterate over layers
+    loss = 0
+    for l in range(len(list_activations_example)):
+        # get dimensions
+        b = list_activations_example[l].shape[0]
+        dim = list_activations_example[l].shape[1]
+        n = list_activations_example[l].shape[2]*list_activations_example[l].shape[3]
+        # linearize layer activations and duplicate example activations according to scaling factor
+        activations_example = list_activations_example[l].view(b, dim, n).repeat(1, 1, SCALING_FACTOR*SCALING_FACTOR)
+        activations_generated = list_activations_generated[l].view(b, dim, n*SCALING_FACTOR*SCALING_FACTOR)
+        # sample random directions
+        Ndirection = dim
+        directions = torch.randn(Ndirection, dim).to(torch.device("cuda:0"))
+        directions = directions / torch.sqrt(torch.sum(directions**2, dim=1, keepdim=True))
+        # project activations over random directions
+        projected_activations_example = torch.einsum('bdn,md->bmn', activations_example, directions)
+        projected_activations_generated = torch.einsum('bdn,md->bmn', activations_generated, directions)
+        # sort the projections
+        sorted_activations_example = torch.sort(projected_activations_example, dim=2)[0]
+        sorted_activations_generated = torch.sort(projected_activations_generated, dim=2)[0]
+        # L2 over sorted lists
+        loss += torch.mean( (sorted_activations_example-sorted_activations_generated)**2 ) 
+    return loss
+```
