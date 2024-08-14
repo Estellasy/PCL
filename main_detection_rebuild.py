@@ -35,9 +35,8 @@ import torchvision.models as models
 
 import pcl.detection_builder
 import pcl.detection_loader
-from pcl.emd_utils import compute_emd_loss
+from pcl.sliced_loss import sliced_loss
 
-# from pcl.loss import EMDLoss
 
 model_names = sorted(name for name in models.__dict__
                      if name.islower() and not name.startswith("__")
@@ -319,7 +318,7 @@ def main_worker(gpu, ngpus_per_node, args):
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch, args, cluster_result_global, cluster_result_dense)
 
-        if (epoch + 1) % 50 == 0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
+        if (epoch + 1) % 20 == 0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
                                                                                and args.rank % ngpus_per_node == 0)):
             save_checkpoint({
                 'epoch': epoch + 1,
@@ -532,7 +531,7 @@ def run_kmeans_dense(x, args):
         # 选择这些索引对应的样本作为初始原型
         centroids = x[indices]
 
-        max_iters = 1
+        max_iters = 20
 
         for iteration in range(max_iters):
             # 输出提示信息
@@ -542,9 +541,10 @@ def run_kmeans_dense(x, args):
             for i in range(N):
                 distances = []
                 for k in range(K):
-                    dist = compute_emd_loss(x[i].unsqueeze(0), centroids[k].unsqueeze(0))
-                    # dist = ssim(x[i].unsqueeze(0), centroids[k].unsqueeze(0))
-                    distances.append(dist)  # 计算平均 EMD 距离
+                    with torch.no_grad():
+                        dist = sliced_loss(x[i].unsqueeze(0), centroids[k].unsqueeze(0)).item()
+                        # dist = ssim(x[i].unsqueeze(0), centroids[k].unsqueeze(0))
+                        distances.append(dist)  # 计算平均 EMD 距离
                 im2cluster.append(np.argmin(distances))
             im2cluster = torch.LongTensor(im2cluster).cuda()
 
@@ -569,9 +569,10 @@ def run_kmeans_dense(x, args):
             for k in range(K):
                 cluster_points = x[im2cluster == k]
                 if len(cluster_points) > 0:
-                    centroid_distances = [compute_emd_loss(p.unsqueeze(0), centroids[k].unsqueeze(0)) for p in cluster_points]
-                    objective += sum(centroid_distances)
-                    imbalance += len(cluster_points) / float(N)
+                    with torch.no_grad():
+                        centroid_distances = [sliced_loss(p.unsqueeze(0), centroids[k].unsqueeze(0)) for p in cluster_points]
+                        objective += sum(centroid_distances)
+                        imbalance += len(cluster_points) / float(N)
 
             print(
                 f"  Iteration {iteration + 1} ({iteration / max_iters:.2f} s, search {iteration / max_iters:.2f} s): objective={objective:.5f} imbalance={imbalance:.3f} nsplit=0")
@@ -587,8 +588,9 @@ def run_kmeans_dense(x, args):
 
         for i in range(N):
             cluster_idx = im2cluster[i]
-            dist = compute_emd_loss(x[i].unsqueeze(0), centroids[cluster_idx].unsqueeze(0))
-            Dcluster[cluster_idx].append(dist)
+            with torch.no_grad():
+                dist = sliced_loss(x[i].unsqueeze(0), centroids[cluster_idx].unsqueeze(0))
+                Dcluster[cluster_idx].append(dist)
 
         for i, dist in enumerate(Dcluster):
             if len(dist) > 1:

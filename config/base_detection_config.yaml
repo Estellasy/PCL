@@ -26,5 +26,5 @@ aug_plus: True
 cos: True
 #num_cluster: '8,9,10'
 num_cluster: '8,9'
-warmup_epoch: 0
+warmup_epoch: 50
 exp_dir: 'exp/'

@@ -196,6 +196,8 @@ class MoCo(nn.Module):
                 proto_logits.append(logits_proto)
             return logits, labels, proto_logits, proto_labels
         else:
+            print("logits:", logits)
+            print("labels:", labels)
             return logits, labels, None, None
 
 

@@ -12,7 +12,7 @@ import sys
 sys.path.append("../PCL/pcl")
 from head import Yolov8Head, MlpHead
 from backbone import resnet50
-from loss import EMDLossCalculator
+from sliced_loss import sliced_loss
 
 
 class DetectionCL(nn.Module):
@@ -63,7 +63,7 @@ class DetectionCL(nn.Module):
         height, width = 7, 7  # 这是 q_dense_flat 的空间维度
         self.register_buffer("queue2", torch.randn(self.r, channels, height, width))
         self.queue2 = nn.functional.normalize(self.queue2, dim=0)
-        print("queue2:", self.queue2.shape)
+        # print("queue2:", self.queue2.shape)
         self.register_buffer("queue2_ptr", torch.zeros(1, dtype=torch.long))
 
     @torch.no_grad()
@@ -213,31 +213,30 @@ class DetectionCL(nn.Module):
 
         # Compute logits
         # Positive logits: Nx1 for global and dense features
-        print("self.queue.clone().detach():", self.queue.clone().detach().shape)  # torch.Size([1024, 4, 7, 7])
+        # print("self.queue.clone().detach():", self.queue.clone().detach().shape)  # torch.Size([1024, 4, 7, 7])
         l_global_pos = torch.einsum('nc,nc->n', [q_global, k_global]).unsqueeze(-1)  # positive samples
         l_global_neg = torch.einsum('nc,ck->nk', [q_global, self.queue.clone().detach()])  # negative samples
 
-        print("l_global_pos:", l_global_pos.shape)  # torch.Size([4, 1])
-        print("l_global_neg:", l_global_neg.shape)  # torch.Size([4, 4])
+        # print("l_global_pos:", l_global_pos.shape)  # torch.Size([4, 1])
+        # print("l_global_neg:", l_global_neg.shape)  # torch.Size([4, 4])
 
         # For dense features, we need to reshape and compute logits accordingly
         # Reshape dense features to (N, C, H*W)
-        print("q_dense:", q_dense.shape)  # torch.Size([4, 1024, 7, 7])
-        print("self.queue2.clone().detach():", self.queue2.clone().detach().shape)  # torch.Size([4, 1024, 7, 7])
+        # print("q_dense:", q_dense.shape)  # torch.Size([4, 1024, 7, 7])
+        # print("self.queue2.clone().detach():", self.queue2.clone().detach().shape)  # torch.Size([4, 1024, 7, 7])
 
         # 在这里修改l_dense_pos和l_dense_neg的计算方式 计算EMD距离
         # Negative logits for dense features: Nx(H*W) x (K)
         l_dense_pos = []
-        compute_emd_loss = EMDLossCalculator()
         for i in range(q_dense.size(0)):  # (N, C, H, W)
             q_dense_i = q_dense[i].unsqueeze(0)  # (1, C, H, W)
             k_dense_i = k_dense[i].unsqueeze(0)  # (1, C, H, W)
-            l_dense_pos.append(compute_emd_loss(q_dense_i, k_dense_i))
+            l_dense_pos.append(sliced_loss(q_dense_i, k_dense_i))
         # l_dense_pos = torch.stack(l_dense_pos, dim=0)  # (N)
         l_dense_pos = torch.tensor(l_dense_pos, device=q_dense.device) # (N)
         l_dense_pos = l_dense_pos.unsqueeze(-1)  # (N, 1)
 
-        print("l_dense_pos:", l_dense_pos.shape)    # torch.Size([4, 1])
+        # print("l_dense_pos:", l_dense_pos.shape)    # torch.Size([4, 1])
 
         l_dense_neg = []
         for neg_sample in self.queue2.clone().detach():  # 对于每个负样本
@@ -245,12 +244,12 @@ class DetectionCL(nn.Module):
             temp_neg = []
             for i in range(q_dense.size(0)):  # (N, C, H, W)
                 q_dense_i = q_dense[i].unsqueeze(0)  # (1, C, H, W)
-                temp_neg.append(compute_emd_loss(q_dense_i, neg_sample))
+                temp_neg.append(sliced_loss(q_dense_i, neg_sample))
             # l_dense_neg.append(temp_neg)
             l_dense_neg.append(torch.stack(temp_neg, dim=0))  # (N, 1)
         l_dense_neg = torch.stack(l_dense_neg, dim=1)
-        print("l_dense_neg:", l_dense_neg.shape)    # torch.Size([4, 4])
-        print("l_dense_neg:", l_dense_neg.requires_grad)
+        # print("l_dense_neg:", l_dense_neg.shape)    # torch.Size([4, 4])
+        # print("l_dense_neg:", l_dense_neg.requires_grad)
 
         logits_global = torch.cat([l_global_pos, l_global_neg], dim=1)  # Nx(1+K)
         logits_dense = torch.cat([l_dense_pos, l_dense_neg], dim=1)  # Nx(1+K)
@@ -301,14 +300,14 @@ class DetectionCL(nn.Module):
                 proto_labels_global.append(labels_proto_global)
                 proto_logits_global.append(logits_proto_global)
 
-            print(proto_logits_global)
-            print(proto_labels_global)
+            # print("proto_logits_global:", proto_logits_global)
+            # print("proto_labels_global:", proto_labels_global)
             result['global'] = [logits_global, labels_global, proto_logits_global, proto_labels_global]
         else:
             result['global'] = [logits_global, labels_global, None, None]
 
-        print(logits_global)
-        print(labels_global)
+        # print("logits_global:", logits_global)
+        # print("labels_global:", labels_global)
 
         if cluster_dense is not None:
             proto_labels_dense = []
@@ -344,15 +343,15 @@ class DetectionCL(nn.Module):
                 proto_labels_dense.append(labels_proto_dense)
                 proto_logits_dense.append(logits_proto_dense)
             
-            print(proto_logits_dense)   # 这里是没有梯度的
-            print(proto_labels_global)
+            # print("proto_logits_dense:", proto_logits_dense)
+            # print("proto_labels_global:", proto_labels_global)
 
             result['dense'] = [logits_dense, labels_dense, proto_logits_dense, proto_labels_dense]
         else:
             result['dense'] = [logits_dense, labels_dense, None, None]
         
-        print(logits_dense)
-        print(labels_dense)
+        # print("logits_dense:", logits_dense)
+        # print("labels_dense:", labels_dense)
         return result
 
     def get_encoderq_features(self, im_q):
