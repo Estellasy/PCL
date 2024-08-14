@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class InfoNCELoss(nn.Module):
     def __init__(self, temperature=0.1):
@@ -18,7 +19,7 @@ class InfoNCELoss(nn.Module):
 
 
 class DenseContrastiveLoss(nn.Module):
-    def __init__(self, temperature=0.1, contrast_mode='all', base_temperature=0.07):
+    def __init__(self, temperature=0.001, contrast_mode='all', base_temperature=0.01):
         super(DenseContrastiveLoss, self).__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
@@ -33,7 +34,7 @@ class DenseContrastiveLoss(nn.Module):
             raise ValueError('Cannot define both `labels` and `mask`')
         elif labels is None and mask is None:
             mask = torch.eye(batch_size, dtype=torch.float32)  # [32, 32]
-            print(mask.shape)
+            # print(mask.shape)
         elif labels is not None:
             labels = labels.contiguous().view(-1, 1)  # [32, 1]
             if labels.shape[0] != batch_size:
@@ -55,18 +56,22 @@ class DenseContrastiveLoss(nn.Module):
             raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
 
         
-        print("anchor_feature:", anchor_feature.shape)
+        # print("anchor_feature:", anchor_feature.shape)
         # compute logits using Frobenius norm
         def frobenius_norm(tensor1, tensor2):
             return torch.sum((tensor1 - tensor2) ** 2, dim=[2, 3])
         
-        计算 anchor_dot_contrast
+        # 计算 anchor_dot_contrast
         anchor_dot_contrast = -frobenius_norm(
             anchor_feature.unsqueeze(1),  # [64, 1, 128, 49]
             contrast_feature.unsqueeze(0)  # [1, 64, 128, 49]
-        ) / self.temperature  # 结果形状为 [64, 64]
+        ) * self.temperature  # 结果形状为 [64, 64]
         
-        print("anchor_dot_contrast:", anchor_dot_contrast)
+        # print("anchor_dot_contrast:", anchor_dot_contrast)
+
+        # 数值稳定性处理
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
 
         # 数值稳定性处理
         logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
@@ -102,6 +107,8 @@ class DenseContrastiveLoss(nn.Module):
     
 if __name__ == "__main__":
     denseloss = DenseContrastiveLoss()
-    feature1 = torch.randn(1, 128, 7, 7)
-    feature2 = torch.randn(1, 128, 7, 7)
+    feature1 = torch.randn(1, 1024, 7, 7)
+    feature2 = torch.randn(1, 1024, 7, 7)
     print(denseloss(feature1, feature2))
+    print(denseloss(feature1, feature1))
+    print(denseloss(feature2, feature2))
