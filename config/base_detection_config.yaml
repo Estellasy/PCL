@@ -1,9 +1,9 @@
-data: '/home/siyi/project/PCL/data/hg'
+data: '/root/autodl-tmp/code/PCL/data/hg'
 arch: 'resnet50'
 workers: 4
-epochs: 300
+epochs: 8
 start_epoch: 0
-batch_size: 4
+batch_size: 8
 lr: 0.03
 schedule: []
 momentum: 0.9
@@ -25,6 +25,6 @@ mlp: True
 aug_plus: True
 cos: True
 #num_cluster: '8,9,10'
-num_cluster: '8,9'
+num_cluster: '8,9,10'
 warmup_epoch: 50
 exp_dir: 'exp/'
