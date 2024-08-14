@@ -12,7 +12,6 @@ import sys
 sys.path.append("../PCL/pcl")
 from head import Yolov8Head, MlpHead
 from backbone import resnet50
-from sliced_loss import sliced_loss
 
 
 class DetectionCL(nn.Module):
@@ -309,46 +308,8 @@ class DetectionCL(nn.Module):
         # print("logits_global:", logits_global)
         # print("labels_global:", labels_global)
 
-        if cluster_dense is not None:
-            proto_labels_dense = []
-            proto_logits_dense = []
-            for n, (im2cluster, prototypes, density) in enumerate(
-                    zip(cluster_dense['im2cluster'], cluster_dense['centroids'], cluster_dense['density'])):
-                # 获取正样本原型
-                pos_proto_id_dense = im2cluster[index]  # index为当前batch中的样本索引   (4,)
-                # 在这里要先修改聚类的代码
-                pos_prototypes_dense = prototypes[pos_proto_id_dense]   # (4, 50176) 这是经过flatten之后的结果 因为得到的cluster_dense中 就是先flatten后再计算的相似度
-
-                # 采样负样本
-                all_proto_id_dense = [i for i in range(im2cluster.max() + 1)]
-                neg_proto_id_dense = set(all_proto_id_dense) - set(pos_proto_id_dense.flatten().tolist())
-
-                # 随机采样r个原型
-                neg_proto_id_dense = sample(neg_proto_id_dense, self.r)
-                neg_prototypes_dense = prototypes[neg_proto_id_dense]
-
-                # 选择的原型集
-                proto_selected_dense = torch.cat([pos_prototypes_dense, neg_prototypes_dense], dim=0)
-
-                # 计算dense级别的原型对比logits
-                logits_proto_dense = torch.einsum('bchw,kchw->bk', q_dense, proto_selected_dense)
-
-                # 目标原型标签
-                labels_proto_dense = torch.linspace(0, q_dense.size(0) - 1, steps=q_dense.size(0)).long().cuda()
-
-                temp_proto_dense = density[
-                    torch.cat([pos_proto_id_dense, torch.LongTensor(neg_proto_id_dense).cuda()], dim=0)]
-                logits_proto_dense /= temp_proto_dense
-
-                proto_labels_dense.append(labels_proto_dense)
-                proto_logits_dense.append(logits_proto_dense)
-            
-            # print("proto_logits_dense:", proto_logits_dense)
-            # print("proto_labels_global:", proto_labels_global)
-
-            result['dense'] = [logits_dense, labels_dense, proto_logits_dense, proto_labels_dense]
-        else:
-            result['dense'] = [logits_dense, labels_dense, None, None]
+        
+        result['dense'] = [logits_dense, labels_dense, None, None]
         
         # print("logits_dense:", logits_dense)
         # print("labels_dense:", labels_dense)

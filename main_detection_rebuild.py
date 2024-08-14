@@ -35,7 +35,6 @@ import torchvision.models as models
 
 import pcl.detection_builder
 import pcl.detection_loader
-from pcl.sliced_loss import sliced_loss
 
 
 model_names = sorted(name for name in models.__dict__
@@ -233,7 +232,7 @@ def main_worker(gpu, ngpus_per_node, args):
         normalize
     ])
 
-    train_dataset = pcl.detection_loader.RandomImageFolderInstance(
+    train_dataset = pcl.detection_loader.ImageFolderInstance(
         traindir,
         pcl.detection_loader.TwoCropsTransform(transforms.Compose(augmentation)))
     eval_dataset = pcl.detection_loader.ImageFolderInstance(
@@ -259,13 +258,10 @@ def main_worker(gpu, ngpus_per_node, args):
     # 修改训练epoch逻辑
     for epoch in range(args.start_epoch, args.epochs):
         cluster_result_global = None
-        cluster_result_dense = None
 
         if epoch >= args.warmup_epoch:
             # compute momentum features for center-cropped images
-            global_features, dense_features = compute_features(eval_loader, model, args)
-            print(global_features.device)
-            print(dense_features.device)
+            global_features = compute_features(eval_loader, model, args)
 
             # placeholder for clustering result
             cluster_result_global = {'im2cluster': [], 'centroids': [], 'density': []}
@@ -274,49 +270,24 @@ def main_worker(gpu, ngpus_per_node, args):
                 cluster_result_global['centroids'].append(torch.zeros(int(num_cluster), args.low_dim).cuda())
                 cluster_result_global['density'].append(torch.zeros(int(num_cluster)).cuda())
 
-            # dense
-            cluster_result_dense = {'im2cluster': [], 'centroids': [], 'density': []}
-            for num_cluster in args.num_cluster:
-                cluster_result_dense['im2cluster'].append(torch.zeros(len(eval_dataset), dtype=torch.long).cuda())
-                cluster_result_dense['centroids'].append(
-                    torch.zeros(int(num_cluster), 1024 * 20 * 20).cuda())  # Flattened size
-                cluster_result_dense['density'].append(torch.zeros(int(num_cluster)).cuda())
-
             if args.gpu == 0:
                 global_features[torch.norm(global_features,
                                            dim=1) > 1.5] /= 2  # account for the few samples that are computed twice
                 global_features = global_features.detach().cpu().numpy()
                 cluster_result_global = run_kmeans(global_features, args)
-                # print("global")
-                # dense
-                # dense_features = dense_features.view(dense_features.size(0), -1)  # Flatten dense features
-                # dense_features[dense_features.norm(dim=1) > 1.5] /= 2
-                # dense_features = dense_features.numpy()
-                cluster_result_dense = run_kmeans_dense(dense_features, args)
-                # cluster_result_dense = run_kmeans_emd(dense_features, args)
 
-                # print("dense")
             dist.barrier()
-            # print("dist bug")
-            # broadcast clustering result
             for k, data_list in cluster_result_global.items():
                 for data_tensor in data_list:
                     dist.broadcast(data_tensor, 0, async_op=False)
 
-                    # print("broadcast global")
-
-            for k, data_list in cluster_result_dense.items():
-                for data_tensor in data_list:
-                    dist.broadcast(data_tensor, 0, async_op=False)
-
-                    # print("broadcast dense")
 
         if args.distributed:
             train_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args, cluster_result_global, cluster_result_dense)
+        train(train_loader, model, criterion, optimizer, epoch, args, cluster_result_global)
 
         if (epoch + 1) % 20 == 0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
                                                                                and args.rank % ngpus_per_node == 0)):
@@ -335,15 +306,12 @@ def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result
     global_loss = AverageMeter('Global Loss', ':.4e')
     dense_loss = AverageMeter('Dense Loss', ':.4e')
     global_proto_loss = AverageMeter('Global Proto Loss', ':.4e')
-    dense_proto_loss = AverageMeter('Dense Proto Loss', ':.4e')
     acc_inst = AverageMeter('Acc@Inst', ':6.2f')
     acc_proto_global = AverageMeter('Acc@Global Proto', ':6.2f')
-    acc_proto_dense = AverageMeter('Acc@Dense Proto', ':6.2f')
 
     progress = ProgressMeter(
         len(train_loader),
-        [batch_time, data_time, losses, global_loss, dense_loss, global_proto_loss, dense_proto_loss, acc_inst,
-         acc_proto_global, acc_proto_dense],
+        [batch_time, data_time, losses, global_loss, dense_loss, global_proto_loss, acc_inst, acc_proto_global],
         prefix="Epoch: [{}]".format(epoch))
 
     # switch to train mode
@@ -359,12 +327,12 @@ def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result
             images[1] = images[1].cuda(args.gpu, non_blocking=True)
 
         # compute output
-        result = model(im_q=images[0], im_k=images[1], cluster_global=cluster_result_global, cluster_dense=cluster_result_dense, index=index)
+        result = model(im_q=images[0], im_k=images[1], cluster_global=cluster_result_global, index=index)
 
         # loss
         loss = 0.
         global_output, global_target, global_output_proto, global_target_proto = result['global']
-        dense_output, dense_target, dense_output_proto, dense_target_proto = result['dense']
+        dense_output, dense_target = result['dense']
         # InfoNCE loss global
         # print("global_output:", global_output.shape)
         # print("global_target:", global_target.shape)
@@ -384,18 +352,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result
         dense_loss = criterion(dense_output, dense_target)
 
         loss += dense_loss
-        # EMD loss dense (using EMD instead of ProtoNCE for dense features)
-        # print(dense_output_proto is not None)
-        if dense_output_proto is not None:
-            dense_proto_loss = 0
-            for proto_out, proto_target in zip(dense_output_proto, dense_target_proto):
-                # print("proto_out:", proto_out.shape)
-                # print("proto_target:", proto_target.shape)
-                dense_proto_loss += criterion(proto_out, proto_target)
-                accp = accuracy(proto_out, proto_target)[0]
-                acc_proto_dense.update(accp[0], images[0].size(0))
-            dense_proto_loss /= len(args.num_cluster)
-            loss += dense_proto_loss
 
         losses.update(loss.item(), images[0].size(0))
         acc = accuracy(global_output, global_target)[0]
@@ -409,6 +365,9 @@ def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
+        
+        global_loss.update()
+        dense_loss.update()
 
         if i % args.print_freq == 0:
             progress.display(i)
@@ -419,10 +378,6 @@ def compute_features(eval_loader, model, args):
     model.eval()
     # global features
     global_features = torch.zeros(len(eval_loader.dataset), args.low_dim).cuda()
-    # print("global_features:", global_features.shape)
-    # dense features
-    dense_features = torch.zeros(len(eval_loader.dataset), 1024, 7, 7).cuda()  # Based on the YOLOv8 head output
-    # print("dense_features:", dense_features.shape)
 
     for i, (images, index) in enumerate(tqdm(eval_loader)):
         with torch.no_grad():
@@ -430,13 +385,11 @@ def compute_features(eval_loader, model, args):
             # print("images:", images.shape)
             feat_global, feat_dense = model(images, is_eval=True)
             global_features[index] = feat_global
-            dense_features[index] = feat_dense
 
     dist.barrier()
     dist.all_reduce(global_features, op=dist.ReduceOp.SUM)
-    dist.all_reduce(dense_features, op=dist.ReduceOp.SUM)
 
-    return global_features, dense_features
+    return global_features
 
 
 def run_kmeans(x, args):
@@ -507,113 +460,6 @@ def run_kmeans(x, args):
         results['im2cluster'].append(im2cluster)
 
     return results
-
-
-def run_kmeans_dense(x, args):
-    """
-        Args:
-            x: 输入特征, 大小为 (N, C, H, W)，例如 (1024, 7, 7) 的特征
-        Returns:
-            results_dense: 包含密集特征聚类信息的字典
-    """
-    print('Performing kmeans clustering on dense features')
-    results_dense = {'im2cluster': [], 'centroids': [], 'density': []}
-
-    N, C, H, W = x.shape
-    K_list = args.num_cluster
-
-    for idx, num_cluster in enumerate(K_list):
-        print(f"Outer iteration {idx + 1} / {len(K_list)}")
-        K = int(num_cluster)
-
-        # 随机初始化 K 个原型
-        indices = torch.randint(0, N, (K,), device=x.device)
-        # 选择这些索引对应的样本作为初始原型
-        centroids = x[indices]
-
-        max_iters = 20
-
-        for iteration in range(max_iters):
-            # 输出提示信息
-            print(f'Iteration {iteration + 1}/{max_iters}')
-            # 1. 计算每个样本到所有原型的 EMD 距离，并分配聚类标签
-            im2cluster = []
-            for i in range(N):
-                distances = []
-                for k in range(K):
-                    with torch.no_grad():
-                        dist = sliced_loss(x[i].unsqueeze(0), centroids[k].unsqueeze(0)).item()
-                        # dist = ssim(x[i].unsqueeze(0), centroids[k].unsqueeze(0))
-                        distances.append(dist)  # 计算平均 EMD 距离
-                im2cluster.append(np.argmin(distances))
-            im2cluster = torch.LongTensor(im2cluster).cuda()
-
-            # 2. 更新原型
-            new_centroids = torch.zeros_like(centroids)
-            counts = torch.zeros(K).cuda()
-
-            for i in range(N):
-                cluster_idx = im2cluster[i]
-                new_centroids[cluster_idx] += x[i]
-                counts[cluster_idx] += 1
-
-            # 防止除零
-            counts = counts.view(-1, 1, 1, 1)
-            counts[counts == 0] = 1
-
-            centroids = new_centroids / counts
-
-            # Calculate objective and imbalance
-            objective = 0.0
-            imbalance = 0.0
-            for k in range(K):
-                cluster_points = x[im2cluster == k]
-                if len(cluster_points) > 0:
-                    with torch.no_grad():
-                        centroid_distances = [sliced_loss(p.unsqueeze(0), centroids[k].unsqueeze(0)) for p in cluster_points]
-                        objective += sum(centroid_distances)
-                        imbalance += len(cluster_points) / float(N)
-
-            print(
-                f"  Iteration {iteration + 1} ({iteration / max_iters:.2f} s, search {iteration / max_iters:.2f} s): objective={objective:.5f} imbalance={imbalance:.3f} nsplit=0")
-
-            # 如果原型没有变化，停止迭代
-            if torch.allclose(new_centroids, centroids, atol=1e-6):
-                print(f'Converged at iteration {iteration + 1}')
-                break
-
-        # 3. 计算密度
-        density = torch.zeros(K).cuda()
-        Dcluster = [[] for _ in range(K)]
-
-        for i in range(N):
-            cluster_idx = im2cluster[i]
-            with torch.no_grad():
-                dist = sliced_loss(x[i].unsqueeze(0), centroids[cluster_idx].unsqueeze(0))
-                Dcluster[cluster_idx].append(dist)
-
-        for i, dist in enumerate(Dcluster):
-            if len(dist) > 1:
-                density[i] = (torch.tensor(dist).sqrt().mean() / np.log(len(dist) + 10)).item()
-
-        dmax = density.max()
-        for i, dist in enumerate(Dcluster):
-            if len(dist) <= 1:
-                density[i] = dmax
-
-        # Use torch.quantile instead of percentile
-        lower_bound = torch.quantile(density, 0.1)
-        upper_bound = torch.quantile(density, 0.9)
-        density = torch.clamp(density, lower_bound, upper_bound)
-        density = density / density.mean()
-
-        results_dense['centroids'] = [centroids]
-        results_dense['density'] = [density]
-        results_dense['im2cluster'] = [im2cluster]
-
-        print("Objective improved: keep new clusters")
-
-    return results_dense
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):

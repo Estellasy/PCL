@@ -1,107 +1,107 @@
-"""
-@Description :
-@Author      : siyiren1@foxmail.com
-@Time        : 2024/07/22 00:08:11
-"""
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import cv2
-from sinkhorn import SinkhornFunction
 
-def sinkhorn_loss(u, v, M, reg=1e-3):
-    return SinkhornFunction.apply(u, v, M, reg)
-
-class EMDLossCalculator(nn.Module):
-    def __init__(self, metric='cosine', form="sinkhorn"):
-        super(EMDLossCalculator, self).__init__()
-        self.metric = metric
-        self.form = form
-
-    def get_similarity_map(self, x, y):
-        way = x.shape[0]
-        num_y = y.shape[0]
-        y = y.view(y.shape[0], y.shape[1], -1)
-        x = x.view(x.shape[0], x.shape[1], -1)
-
-        x = x.unsqueeze(0).repeat([num_y, 1, 1, 1])
-        y = y.unsqueeze(1).repeat([1, way, 1, 1])
-        x = x.permute(0, 1, 3, 2)
-        y = y.permute(0, 1, 3, 2)
-        feature_size = x.shape[-2]
-
-        if self.metric == 'cosine':
-            x = x.unsqueeze(-3)
-            y = y.unsqueeze(-2)
-            y = y.repeat(1, 1, 1, feature_size, 1)
-            similarity_map = F.cosine_similarity(x, y, dim=-1)
-        else:
-            x = x.unsqueeze(-3)
-            y = y.unsqueeze(-2)
-            y = y.repeat(1, 1, 1, feature_size, 1)
-            similarity_map = (x - y).pow(2).sum(-1)
-            similarity_map = 1 - similarity_map
-
-        return similarity_map
-
-    def emd_inference(self, cost_matrix, weight1, weight2):
-        if self.form == "opencv":
-            cost_matrix = cost_matrix.detach().cpu().numpy()
-
-            weight1 = F.relu(weight1) + 1e-5
-            weight2 = F.relu(weight2) + 1e-5
-
-            weight1 = (weight1 * (weight1.shape[0] / weight1.sum().item())).view(-1, 1).detach().cpu().numpy()
-            weight2 = (weight2 * (weight2.shape[0] / weight2.sum().item())).view(-1, 1).detach().cpu().numpy()
-
-            cost, _, _ = cv2.EMD(weight1, weight2, cv2.DIST_USER, cost_matrix)
-            return cost
-        elif self.form == "sinkhorn":
-            weight1 = F.relu(weight1) + 1e-5
-            weight2 = F.relu(weight2) + 1e-5
-            
-            weight1 = weight1.view(-1).requires_grad_()
-            weight2 = weight2.view(-1).requires_grad_()
-            return sinkhorn_loss(u=weight1.unsqueeze(dim=0), v=weight2.unsqueeze(dim=0), reg=0.1, M=cost_matrix.unsqueeze(dim=0))
-
-        else:
-            raise NotImplementedError("Replace with differentiable EMD computation")
-
-
-    def forward(self, x, y):
-        similarity_map = self.get_similarity_map(x, y)
+class InfoNCELoss(nn.Module):
+    def __init__(self, temperature=0.1):
+        super(InfoNCELoss, self).__init__()
+        self.criterion = nn.CrossEntropyLoss()
+        self.temperature = temperature
         
-        num_x = similarity_map.shape[0]
-        num_y = similarity_map.shape[1]
-        num_node = x.shape[-1]
-
-        total_cost = 0
-        for i in range(num_x):
-            for j in range(num_y):
-                cost = self.emd_inference(1 - similarity_map[i, j, :, :], x[i, j, :], y[j, i, :])
-                total_cost += cost
-
-        # Average cost over all pairs
-        emd_loss = total_cost / (num_x * num_y)
-        return emd_loss
-
+    def forward(self, pos, neg):
+        N = pos.size(0)
+        logits = torch.cat((pos, neg), dim=1)
+        logits /= self.temperature
+        labels = torch.zeros((N, ), dtype=torch.long).cuda()
+        return self.criterion(logits, labels)
     
-# Usage example
+    
+
+
+class DenseContrastiveLoss(nn.Module):
+    def __init__(self, temperature=0.1, contrast_mode='all', base_temperature=0.07):
+        super(DenseContrastiveLoss, self).__init__()
+        self.temperature = temperature
+        self.contrast_mode = contrast_mode
+        self.base_temperature = base_temperature
+
+    def forward(self, feature1, feature2, labels=None, mask=None):
+        feature1 = feature1.view(feature1.shape[0], feature1.shape[1], -1)
+        feature2 = feature2.view(feature2.shape[0], feature2.shape[1], -1)
+
+        batch_size = feature1.shape[0]  # 32
+        if labels is not None and mask is not None:
+            raise ValueError('Cannot define both `labels` and `mask`')
+        elif labels is None and mask is None:
+            mask = torch.eye(batch_size, dtype=torch.float32)  # [32, 32]
+            print(mask.shape)
+        elif labels is not None:
+            labels = labels.contiguous().view(-1, 1)  # [32, 1]
+            if labels.shape[0] != batch_size:
+                raise ValueError('Num of labels does not match num of features')
+            mask = torch.eq(labels, labels.T).float()  # [32, 32]
+        else:
+            mask = mask.float()
+
+        contrast_count = 2
+        contrast_feature = torch.cat([feature1, feature2], dim=0)  # [64, 128, 49]
+        
+        if self.contrast_mode == 'one':
+            anchor_feature = features[:, 0]  # [32, 128, 49]
+            anchor_count = 1
+        elif self.contrast_mode == 'all':
+            anchor_feature = contrast_feature  # [64, 128, 49]
+            anchor_count = contrast_count  # 2
+        else:
+            raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
+
+        
+        print("anchor_feature:", anchor_feature.shape)
+        # compute logits using Frobenius norm
+        def frobenius_norm(tensor1, tensor2):
+            return torch.sum((tensor1 - tensor2) ** 2, dim=[2, 3])
+        
+        计算 anchor_dot_contrast
+        anchor_dot_contrast = -frobenius_norm(
+            anchor_feature.unsqueeze(1),  # [64, 1, 128, 49]
+            contrast_feature.unsqueeze(0)  # [1, 64, 128, 49]
+        ) / self.temperature  # 结果形状为 [64, 64]
+        
+        print("anchor_dot_contrast:", anchor_dot_contrast)
+
+        # 数值稳定性处理
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        # 处理掩码和计算 log_prob
+        mask = mask.repeat(anchor_count, contrast_count)  # [64, 64]
+        logits_mask = torch.ones_like(logits)  # [64, 64]
+        logits_mask = torch.scatter(
+            logits_mask,
+            1,
+            torch.arange(logits.shape[0]).view(-1, 1),
+            0
+        )
+        mask = mask * logits_mask  # [64, 64]
+
+        exp_logits = torch.exp(logits) * logits_mask  # [64, 64]
+        # 添加一个小常数以避免数值问题
+        safe_exp_logits_sum = exp_logits.sum(1, keepdim=True) + 1e-10
+        log_prob = logits - torch.log(safe_exp_logits_sum)  # [64, 64]
+
+        # 计算平均对数似然损失
+        mask_pos_pairs = mask.sum(1)  # [64]
+        mask_pos_pairs = torch.where(mask_pos_pairs < 1e-6, torch.tensor(1.0, dtype=mask_pos_pairs.dtype), mask_pos_pairs)
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask_pos_pairs  # [64]
+
+        # 计算最终损失
+        loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
+        loss = loss.view(anchor_count, batch_size).mean()
+
+        return loss
+    
+    
 if __name__ == "__main__":
-    model = EMDLossCalculator()
-
-    x = torch.randn((1, 1024, 7, 7))
-    y = torch.randn((1, 1024, 7, 7))
-    
-    emd_loss = model(x, y)
-    print(f'EMD Loss: {emd_loss.item()}')
-
-    emd_loss = model(x, x)
-    print(f'EMD Loss: {emd_loss.item()}')
-
-    emd_loss = model(y, y*0.9)
-    print(f'EMD Loss: {emd_loss.item()}')
-
-    emd_loss = model(y, y)
-    print(f'EMD Loss: {emd_loss.item()}')
+    denseloss = DenseContrastiveLoss()
+    feature1 = torch.randn(1, 128, 7, 7)
+    feature2 = torch.randn(1, 128, 7, 7)
+    print(denseloss(feature1, feature2))
