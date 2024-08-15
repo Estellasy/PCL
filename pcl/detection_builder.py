@@ -58,8 +58,10 @@ class DetectionCL(nn.Module):
         self.queue = nn.functional.normalize(self.queue, dim=0)
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
-        channels = 1024  # 这是 q_dense_flat 的通道维度
-        height, width = 7, 7  # 这是 q_dense_flat 的空间维度
+        # channels = 1024  # 这是 q_dense_flat 的通道维度
+        # height, width = 7, 7  # 这是 q_dense_flat 的空间维度
+        channels = 512  # 这是 q_dense_flat 的通道维度
+        height, width = 14, 14  # 这是 q_dense_flat 的空间维度
         self.register_buffer("queue2", torch.randn(self.r, channels, height, width))
         self.queue2 = nn.functional.normalize(self.queue2, dim=0)
         # print("queue2:", self.queue2.shape)
@@ -266,20 +268,20 @@ class DetectionCL(nn.Module):
                 proto_labels_global.append(labels_proto_global)
                 proto_logits_global.append(logits_proto_global)
 
-            # print("proto_logits_global:", proto_logits_global)
-            # print("proto_labels_global:", proto_labels_global)
+            # print("proto_logits_global:", proto_logits_global.requires_grad())
+            # print("proto_labels_global:", proto_labels_global.requires_grad())
             result['global'] = [logits_global, labels_global, proto_logits_global, proto_labels_global]
         else:
             result['global'] = [logits_global, labels_global, None, None]
 
-        # print("logits_global:", logits_global)
-        # print("labels_global:", labels_global)
+        print("logits_global:", logits_global.requires_grad)
+        print("labels_global:", labels_global.requires_grad)
 
         
         result['dense'] = [q_dense, k_dense]
         
-        # print("logits_dense:", logits_dense)
-        # print("labels_dense:", labels_dense)
+        # print("q_dense:", q_dense.requires_grad)
+        # print("k_dense:", k_dense.requires_grad)
         return result
 
     def get_encoderq_features(self, im_q):

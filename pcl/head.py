@@ -123,7 +123,7 @@ class Yolov8Head(nn.Module):
 
         # 特征融合
         # Fusion process
-        return self.fuse(p1, p2, p3)
+        return self.fuse(p1, p3, p2)
 
 """
 @Description : Multi-scale Fusion
@@ -222,15 +222,22 @@ class MultiScaleFusion(nn.Module):
         self.residual = IRMLP(ch_1 + ch_2 + ch_int, ch_out)  # 多层感知机用于非线性映射
 
     def forward(self, l, g, f):
+        # l: torch.Size([4, 256, 28, 28])
+        # g: torch.Size([4, 512, 14, 14])
+        # f: torch.Size([4, 1024, 7, 7])
+        # print(l.shape)
+        # print(g.shape)
+        # print(f.shape)
         W_local = self.W_l(l)
         W_local = self.Avg(W_local)
-        # print("W_local: ", W_local.shape)   # [1, 512, 40, 40]
+        # print("W_local: ", W_local.shape)   # [4, 512, 14, 14]
         W_global = self.W_g(g)
         W_global = self.upsample(W_global)
-        # print("W_global: ", W_global.shape) # [1, 512, 40, 40]
+        # print("W_global: ", W_global.shape) # [1, 512, 14, 14]
         if f is not None:       # 额外特征
-            W_f = self.Updim(f) # 上采样
-            # print("W_f: ", W_f.shape)   # [1, 512, 40, 40]
+            # W_f = self.Updim(f) # 上采样
+            W_f = f
+            # print("W_f: ", W_f.shape)   # W_f:  torch.Size([1, 512, 14, 14])
             shortcut = W_f
             X_f = torch.cat([W_f, W_local, W_global], 1)    # 在通道维度进行拼接
             X_f = self.norm1(X_f)
@@ -243,7 +250,7 @@ class MultiScaleFusion(nn.Module):
             X_f = self.W(X_f)
             X_f = self.gelu(X_f)
 
-        # print("X_f.shape", X_f.shape)   # [1, 512, 40, 40]
+        # print("X_f.shape", X_f.shape)   # X_f.shape torch.Size([1, 512, 14, 14])
 
         # spatial attention for ConvNeXt branch 空间注意力
         l_jump = l
@@ -255,7 +262,7 @@ class MultiScaleFusion(nn.Module):
 
         # print("l.shape:", l.shape)  # [1, 256, 80, 80]
 
-        # channel attetion for transformer branch
+        # channel attention for transformer branch
         g_jump = g                                          # 通道注意力
         max_result = self.maxpool(g)
         avg_result = self.avgpool(g)
@@ -311,13 +318,13 @@ class MultiScaleFusionTest(nn.Module):
     def forward(self, l, g, f):
         W_local = self.W_l(l)
         W_local = self.Avg(W_local)
-        print("W_local: ", W_local.shape)   # [1, 512, 40, 40]
+        # print("W_local: ", W_local.shape)   # [1, 512, 40, 40]
         W_global = self.W_g(g)
         W_global = self.upsample(W_global)
-        print("W_global: ", W_global.shape) # [1, 512, 40, 40]
+        # print("W_global: ", W_global.shape) # [1, 512, 40, 40]
         if f is not None:       # 额外特征
             W_f = self.Updim(f) # 上采样
-            print("W_f: ", W_f.shape)   # [1, 512, 40, 40]
+            # print("W_f: ", W_f.shape)   # [1, 512, 40, 40]
             shortcut = W_f
             X_f = torch.cat([W_f, W_local, W_global], 1)    # 在通道维度进行拼接
             X_f = self.norm1(X_f)
@@ -330,7 +337,7 @@ class MultiScaleFusionTest(nn.Module):
             X_f = self.W(X_f)
             X_f = self.gelu(X_f)
 
-        print("X_f.shape", X_f.shape)   # [1, 512, 40, 40]
+        # print("X_f.shape", X_f.shape)   # [1, 512, 40, 40]
 
         # spatial attention for ConvNeXt branch 空间注意力
         l_jump = l
@@ -340,28 +347,28 @@ class MultiScaleFusionTest(nn.Module):
         l = self.spatial(result)
         l = self.sigmoid(l) * l_jump                        # 空间注意力
 
-        print("l.shape:", l.shape)  # [1, 256, 80, 80]
+        # print("l.shape:", l.shape)  # [1, 256, 80, 80]
 
         # channel attetion for transformer branch
         g_jump = g                                          # 通道注意力
         max_result = self.maxpool(g)
         avg_result = self.avgpool(g)
         max_out = self.se(max_result)
-        print("max_out.shape:", max_out.shape)
+        # print("max_out.shape:", max_out.shape)
         avg_out = self.se(avg_result)
-        print("avg_out.shape:", avg_out.shape)
+        # print("avg_out.shape:", avg_out.shape)
         g = self.sigmoid(max_out + avg_out) * g_jump        # 通道注意力
-        print("g.shape:", g.shape)          # [1, 1024, 20, 20]
+        # print("g.shape:", g.shape)          # [1, 1024, 20, 20]
         g = self.upsample(g)
-        print("g.shape:", g.shape)          # [1, 1024, 40, 40]
+        # print("g.shape:", g.shape)          # [1, 1024, 40, 40]
 
         ## ADJUST THE SIZE OF L AND G TO MATCH X_F ##
         _, _, H, W = X_f.shape
         l_resized = nn.functional.adaptive_avg_pool2d(l, (H, W))
-        print("l_resized.shape:", l_resized.shape)
+        # print("l_resized.shape:", l_resized.shape)
 
         fuse = torch.cat([g, l_resized, X_f], 1)                    # 特征拼接
-        print("fuse.shape:", fuse.shape)  # [1, 1280, 40, 40]
+        # print("fuse.shape:", fuse.shape)  # [1, 1280, 40, 40]
         fuse = self.norm3(fuse)
         fuse = self.residual(fuse)                          # 残差连接
         fuse = shortcut
@@ -459,30 +466,30 @@ def test_multiscale_fusion():
     r_2 = 4
     ch_out = 512
 
-    h_1 = 80
-    h_2 = 20
+    h_1 = 28
+    h_2 = 7
 
     # 创建 MultiScaleFusion 实例
     model = MultiScaleFusion(ch_1, ch_2, r_2, ch_int, ch_out)
 
     # 打印模型结构
-    print(model)
+    # print(model)
 
     # 创建示例输入
     batch_size = 1
 
     l = torch.randn(batch_size, ch_1, h_1, h_1)  # 局部特征输入
-    print("l.shape", l.shape)
+    # print("l.shape", l.shape)
     g = torch.randn(batch_size, ch_2, h_2, h_2)  # 全局特征输入
-    print("g.shape", g.shape)
-    f = torch.randn(batch_size, ch_int // 2, h_1 // 2, h_1 // 2)  # 额外特征输入
-    print("f.shape", f.shape)
+    # print("g.shape", g.shape)
+    f = torch.randn(batch_size, ch_int, h_1 // 2, h_1 // 2)  # 额外特征输入
+    # print("f.shape", f.shape)
 
     # 前向传播
     output = model(l, g, f)
 
     # 打印输出形状
-    print(f"输出形状: {output.shape}")
+    # print(f"输出形状: {output.shape}")
 
 
 def test_yolohead():
