@@ -19,13 +19,14 @@ class InfoNCELoss(nn.Module):
 
 
 class DenseContrastiveLoss(nn.Module):
-    def __init__(self, temperature=0.001, contrast_mode='all', base_temperature=0.01):
+    def __init__(self, temperature=0.01, contrast_mode='all', base_temperature=0.01):
         super(DenseContrastiveLoss, self).__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
 
     def forward(self, feature1, feature2, labels=None, mask=None):
+        device = feature1.device
         feature1 = feature1.view(feature1.shape[0], feature1.shape[1], -1)
         feature2 = feature2.view(feature2.shape[0], feature2.shape[1], -1)
 
@@ -33,7 +34,7 @@ class DenseContrastiveLoss(nn.Module):
         if labels is not None and mask is not None:
             raise ValueError('Cannot define both `labels` and `mask`')
         elif labels is None and mask is None:
-            mask = torch.eye(batch_size, dtype=torch.float32)  # [32, 32]
+            mask = torch.eye(batch_size, dtype=torch.float32).to(device)  # [32, 32]
             # print(mask.shape)
         elif labels is not None:
             labels = labels.contiguous().view(-1, 1)  # [32, 1]
@@ -79,11 +80,11 @@ class DenseContrastiveLoss(nn.Module):
 
         # 处理掩码和计算 log_prob
         mask = mask.repeat(anchor_count, contrast_count)  # [64, 64]
-        logits_mask = torch.ones_like(logits)  # [64, 64]
+        logits_mask = torch.ones_like(logits).to(device)  # [64, 64]
         logits_mask = torch.scatter(
             logits_mask,
             1,
-            torch.arange(logits.shape[0]).view(-1, 1),
+            torch.arange(logits.shape[0]).view(-1, 1).to(device),
             0
         )
         mask = mask * logits_mask  # [64, 64]
@@ -95,7 +96,7 @@ class DenseContrastiveLoss(nn.Module):
 
         # 计算平均对数似然损失
         mask_pos_pairs = mask.sum(1)  # [64]
-        mask_pos_pairs = torch.where(mask_pos_pairs < 1e-6, torch.tensor(1.0, dtype=mask_pos_pairs.dtype), mask_pos_pairs)
+        mask_pos_pairs = torch.where(mask_pos_pairs < 1e-6, torch.tensor(1.0, dtype=mask_pos_pairs.dtype, device=device), mask_pos_pairs)
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask_pos_pairs  # [64]
 
         # 计算最终损失

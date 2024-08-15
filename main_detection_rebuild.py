@@ -35,6 +35,7 @@ import torchvision.models as models
 
 import pcl.detection_builder
 import pcl.detection_loader
+import pcl.loss
 
 
 model_names = sorted(name for name in models.__dict__
@@ -170,6 +171,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    dense_loss_fn = pcl.loss.DenseContrastiveLoss()
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
@@ -287,7 +289,7 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args, cluster_result_global)
+        train(train_loader, model, criterion, dense_loss_fn, optimizer, epoch, args, cluster_result_global)
 
         if (epoch + 1) % 20 == 0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
                                                                                and args.rank % ngpus_per_node == 0)):
@@ -299,19 +301,19 @@ def main_worker(gpu, ngpus_per_node, args):
             }, is_best=False, filename='{}/checkpoint_{:04d}.pth.tar'.format(args.exp_dir, epoch))
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result_global=None, cluster_result_dense=None):
+def train(train_loader, model, criterion, dense_loss_fn, optimizer, epoch, args, cluster_result_global=None, cluster_result_dense=None):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
-    global_loss = AverageMeter('Global Loss', ':.4e')
-    dense_loss = AverageMeter('Dense Loss', ':.4e')
-    global_proto_loss = AverageMeter('Global Proto Loss', ':.4e')
+    global_losses = AverageMeter('Global Loss', ':.4e')
+    dense_losses = AverageMeter('Dense Loss', ':.4e')
+    global_proto_losses = AverageMeter('Global Proto Loss', ':.4e')
     acc_inst = AverageMeter('Acc@Inst', ':6.2f')
     acc_proto_global = AverageMeter('Acc@Global Proto', ':6.2f')
 
     progress = ProgressMeter(
         len(train_loader),
-        [batch_time, data_time, losses, global_loss, dense_loss, global_proto_loss, acc_inst, acc_proto_global],
+        [batch_time, data_time, losses, global_losses, dense_losses, global_proto_losses, acc_inst, acc_proto_global],
         prefix="Epoch: [{}]".format(epoch))
 
     # switch to train mode
@@ -332,12 +334,14 @@ def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result
         # loss
         loss = 0.
         global_output, global_target, global_output_proto, global_target_proto = result['global']
-        dense_output, dense_target = result['dense']
+        q_dense, k_dense = result['dense']
+        q_dense = q_dense.cuda()
+        k_dense = k_dense.cuda()
+        dense_loss = dense_loss_fn(q_dense, k_dense)
         # InfoNCE loss global
         # print("global_output:", global_output.shape)
         # print("global_target:", global_target.shape)
         global_loss = criterion(global_output, global_target)
-        loss += global_loss
         # ProtoNCE loss global
         if global_output_proto is not None:
             g_p_l = 0
@@ -347,11 +351,9 @@ def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result
                 acc_proto_global.update(accp[0], images[0].size(0))
             g_p_l /= len(args.num_cluster)
             global_proto_loss = g_p_l
-            loss += global_proto_loss
+            loss += g_p_l
 
-        dense_loss = criterion(dense_output, dense_target)
-
-        loss += dense_loss
+        loss += global_loss + 0.5 * dense_loss
 
         losses.update(loss.item(), images[0].size(0))
         acc = accuracy(global_output, global_target)[0]
@@ -366,8 +368,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args, cluster_result
         batch_time.update(time.time() - end)
         end = time.time()
         
-        global_loss.update()
-        dense_loss.update()
+        global_losses.update(global_loss.item(), images[0].size(0))
+        dense_losses.update(dense_loss.item(), images[0].size(0))
 
         if i % args.print_freq == 0:
             progress.display(i)

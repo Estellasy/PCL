@@ -219,46 +219,13 @@ class DetectionCL(nn.Module):
         # print("l_global_pos:", l_global_pos.shape)  # torch.Size([4, 1])
         # print("l_global_neg:", l_global_neg.shape)  # torch.Size([4, 4])
 
-        # For dense features, we need to reshape and compute logits accordingly
-        # Reshape dense features to (N, C, H*W)
-        # print("q_dense:", q_dense.shape)  # torch.Size([4, 1024, 7, 7])
-        # print("self.queue2.clone().detach():", self.queue2.clone().detach().shape)  # torch.Size([4, 1024, 7, 7])
-
-        # 在这里修改l_dense_pos和l_dense_neg的计算方式 计算EMD距离
-        # Negative logits for dense features: Nx(H*W) x (K)
-        l_dense_pos = []
-        for i in range(q_dense.size(0)):  # (N, C, H, W)
-            q_dense_i = q_dense[i].unsqueeze(0)  # (1, C, H, W)
-            k_dense_i = k_dense[i].unsqueeze(0)  # (1, C, H, W)
-            l_dense_pos.append(sliced_loss(q_dense_i, k_dense_i))
-        # l_dense_pos = torch.stack(l_dense_pos, dim=0)  # (N)
-        l_dense_pos = torch.tensor(l_dense_pos, device=q_dense.device) # (N)
-        l_dense_pos = l_dense_pos.unsqueeze(-1)  # (N, 1)
-
-        # print("l_dense_pos:", l_dense_pos.shape)    # torch.Size([4, 1])
-
-        l_dense_neg = []
-        for neg_sample in self.queue2.clone().detach():  # 对于每个负样本
-            neg_sample = neg_sample.unsqueeze(0)  # (1, C, H, W)
-            temp_neg = []
-            for i in range(q_dense.size(0)):  # (N, C, H, W)
-                q_dense_i = q_dense[i].unsqueeze(0)  # (1, C, H, W)
-                temp_neg.append(sliced_loss(q_dense_i, neg_sample))
-            # l_dense_neg.append(temp_neg)
-            l_dense_neg.append(torch.stack(temp_neg, dim=0))  # (N, 1)
-        l_dense_neg = torch.stack(l_dense_neg, dim=1)
-        # print("l_dense_neg:", l_dense_neg.shape)    # torch.Size([4, 4])
-        # print("l_dense_neg:", l_dense_neg.requires_grad)
 
         logits_global = torch.cat([l_global_pos, l_global_neg], dim=1)  # Nx(1+K)
-        logits_dense = torch.cat([l_dense_pos, l_dense_neg], dim=1)  # Nx(1+K)
         # apply temperature
         logits_global /= self.T
-        logits_dense /= self.T
         # labels: postive key indicators
         # 每个样本的标签为 0 表示正样本
         labels_global = torch.zeros(logits_global.shape[0], dtype=torch.long).cuda()
-        labels_dense = torch.zeros(logits_dense.shape[0], dtype=torch.long).cuda()
 
         self._dequeue_and_enqueue(k_global)
         self._dequeue_and_enqueue2(k_dense)
@@ -309,7 +276,7 @@ class DetectionCL(nn.Module):
         # print("labels_global:", labels_global)
 
         
-        result['dense'] = [logits_dense, labels_dense, None, None]
+        result['dense'] = [q_dense, k_dense]
         
         # print("logits_dense:", logits_dense)
         # print("labels_dense:", labels_dense)
