@@ -274,8 +274,8 @@ class DetectionCL(nn.Module):
         else:
             result['global'] = [logits_global, labels_global, None, None]
 
-        print("logits_global:", logits_global.requires_grad)
-        print("labels_global:", labels_global.requires_grad)
+        # print("logits_global:", logits_global.requires_grad)
+        # print("labels_global:", labels_global.requires_grad)
 
         
         result['dense'] = [q_dense, k_dense]

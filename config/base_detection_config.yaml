@@ -9,7 +9,7 @@ schedule: []
 momentum: 0.9
 weight_decay: 1e-4
 print_freq: 50
-resume: ''
+resume: '/home/siyi/project/PCL/exp/2024_08_15_2351/checkpoint_0239.pth.tar'
 world_size: 1
 rank: 0
 dist_url: 'tcp://localhost:10002'
