@@ -22,3 +22,6 @@ python main_pcl.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet5
 
 # Train for new
 python main_pcl.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir exp/8 --dist-url 'tcp://localhost:10002' --num-cluster '8,9,10'  --pcl-r 4 --seed 0 --warmup-epoch 50 --epochs 300
+
+# Train for new - test 2025/1/20
+python main_pcl.py /home/siyi/project/PCL/data/hg --gpu 0 --workers 4 -a resnet50 --lr 0.03 --batch-size 4 --temperature 0.2 --mlp --aug-plus --cos --multiprocessing-distributed --world-size 1 --rank 0 --exp-dir exp/8_9_10_test_20250120 --dist-url 'tcp://localhost:10002' --num-cluster '8,9,10'  --pcl-r 4 --seed 0 --warmup-epoch 50 --epochs 300

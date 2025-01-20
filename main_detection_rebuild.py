@@ -178,11 +178,8 @@ def main_worker(gpu, ngpus_per_node, args):
                                 weight_decay=args.weight_decay)
 
     # optionally resume from a checkpoint
-    # if args.resume:
-    if True:
-        print(os.path.isfile(args.resume))
-        # if os.path.isfile(args.resume):
-        if True:
+    if args.resume:
+        if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             if args.gpu is None:
                 checkpoint = torch.load(args.resume)
@@ -338,6 +335,7 @@ def train(train_loader, model, criterion, dense_loss_fn, optimizer, epoch, args,
         loss = 0.
         global_output, global_target, global_output_proto, global_target_proto = result['global']
         q_dense, k_dense = result['dense']
+        # print(q_dense.shape)
         q_dense = q_dense.cuda()
         k_dense = k_dense.cuda()
         dense_loss = dense_loss_fn(q_dense, k_dense)
